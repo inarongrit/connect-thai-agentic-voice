@@ -33,13 +33,22 @@ def _multi(loader, tag_suffix, node):
 CfnLoader.add_multi_constructor("!", _multi)
 
 
+# Support flows -- agent whisper, customer queue, hold -- are not customer-facing
+# dialogue and carry no marketing disclosures. Only CONTACT_FLOW opens a conversation
+# with a customer, so only CONTACT_FLOW must declare that the voice is automated, that
+# the call may be recorded, and who is speaking.
+DIALOGUE_FLOW_TYPE = "CONTACT_FLOW"
+
+
 def flow_messages():
-    """Return {source: {identifier: spoken text}} for every contact flow definition."""
+    """Return {source: {identifier: spoken text}} for every customer-facing flow."""
     found = {}
     for name in ("template.yaml", "mantle-template.yaml"):
         document = yaml.load((IAC / name).read_text(), Loader=CfnLoader)
         for key, resource in document["Resources"].items():
             if resource.get("Type") != "AWS::Connect::ContactFlow":
+                continue
+            if resource["Properties"].get("Type", DIALOGUE_FLOW_TYPE) != DIALOGUE_FLOW_TYPE:
                 continue
             doc = json.loads(resource["Properties"]["Content"])
             found[f"{name}:{key}"] = {

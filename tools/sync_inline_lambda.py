@@ -41,15 +41,21 @@ CASES = (
 # !Sub block, so it needs its own handling. Nothing checked this copy before, which
 # meant the readable iac/mantle-flow.json could silently disagree with what actually
 # deploys -- the more dangerous of the two drifts, because the flow is the behaviour.
-FLOW_CASE = ("mantle-template.yaml", "mantle-flow.json",
-             "  MantleContactFlow:", "Outputs:")
+FLOW_CASES = (
+    ("mantle-template.yaml", "mantle-agent-whisper-flow.json",
+     "  MantleAgentWhisperFlow:", "  MantleQueueFlow:"),
+    ("mantle-template.yaml", "mantle-queue-flow.json",
+     "  MantleQueueFlow:", "  MantleContactFlow:"),
+    ("mantle-template.yaml", "mantle-flow.json",
+     "  MantleContactFlow:", "Outputs:"),
+)
 FLOW_PREFIX = "      Content: !Sub |\n"
 FLOW_INDENT = " " * 8
 
 
-def sync_flow(check):
-    """Render iac/mantle-flow.json into the template as a single compact line."""
-    template, source, start, following = FLOW_CASE
+def sync_flow(check, case):
+    """Render one flow JSON into the template as a single compact line."""
+    template, source, start, following = case
     path = IAC / template
     text = path.read_text()
     begin = text.index(start)
@@ -124,8 +130,9 @@ def main():
         path.write_text(text[:code_start] + desired + text[code_end:])
         print(f"  updated   {template} <- {source}")
 
-    if sync_flow(args.check) and args.check:
-        stale.append("mantle-flow.json")
+    for case in FLOW_CASES:
+        if sync_flow(args.check, case) and args.check:
+            stale.append(case[1])
 
     if args.check and stale:
         print(f"\n{len(stale)} template(s) stale. Run: python3 tools/sync_inline_lambda.py")

@@ -1,0 +1,58 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "whisper-voice",
+  "Metadata": {
+    "entryPointPosition": {
+      "x": 20,
+      "y": 20
+    },
+    "snapToGrid": false,
+    "name": "FSI Mantle Agent Whisper",
+    "type": "contactFlow",
+    "status": "published",
+    "ActionMetadata": {}
+  },
+  "Actions": [
+    {
+      "Identifier": "whisper-voice",
+      "Type": "UpdateContactTextToSpeechVoice",
+      "Parameters": {
+        "TextToSpeechVoice": "SUDA",
+        "TextToSpeechEngine": "connect:agentic"
+      },
+      "Transitions": {
+        "NextAction": "whisper-brief",
+        "Errors": [
+          {
+            "NextAction": "whisper-brief",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "whisper-brief",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "สายโอนจากผู้ช่วยอัตโนมัติค่ะ เหตุผล $.Attributes.handoffReason รายละเอียด $.Attributes.handoffSummary"
+      },
+      "Transitions": {
+        "NextAction": "whisper-end",
+        "Errors": [
+          {
+            "NextAction": "whisper-end",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "whisper-end",
+      "Type": "EndFlowExecution",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}

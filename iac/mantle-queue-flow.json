@@ -1,0 +1,102 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "queue-voice",
+  "Metadata": {
+    "entryPointPosition": {
+      "x": 20,
+      "y": 20
+    },
+    "snapToGrid": false,
+    "name": "FSI Mantle Customer Queue",
+    "type": "contactFlow",
+    "status": "published",
+    "ActionMetadata": {}
+  },
+  "Actions": [
+    {
+      "Identifier": "queue-voice",
+      "Type": "UpdateContactTextToSpeechVoice",
+      "Parameters": {
+        "TextToSpeechVoice": "SUDA",
+        "TextToSpeechEngine": "connect:agentic"
+      },
+      "Transitions": {
+        "NextAction": "queue-hold-message",
+        "Errors": [
+          {
+            "NextAction": "queue-hold-message",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "queue-hold-message",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "กรุณาถือสายรอสักครู่นะคะ ระบบกำลังโอนสายให้เจ้าหน้าที่ดูแลต่อค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "queue-wait",
+        "Errors": [
+          {
+            "NextAction": "queue-wait",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "queue-wait",
+      "Type": "Wait",
+      "Parameters": {
+        "TimeLimitSeconds": "45"
+      },
+      "Transitions": {
+        "NextAction": "queue-no-agent",
+        "Errors": [
+          {
+            "NextAction": "queue-no-agent",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "queue-no-agent",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "WaitCompleted"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "queue-no-agent",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "ขออภัยค่ะ ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสาย จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "queue-end",
+        "Errors": [
+          {
+            "NextAction": "queue-end",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "queue-end",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}

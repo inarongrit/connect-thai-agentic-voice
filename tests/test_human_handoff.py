@@ -31,8 +31,27 @@ VERIFIED_BLOCKS = {
     "UpdateContactTextToSpeechVoice", "UpdateContactData", "Compare",
     "MessageParticipant", "ConnectParticipantWithLexBot", "InvokeLambdaFunction",
     "UpdateContactAttributes", "UpdateContactTargetQueue", "CheckHoursOfOperation",
-    "TransferContactToQueue", "DisconnectParticipant",
+    "TransferContactToQueue", "DisconnectParticipant", "UpdateContactEventHooks",
 }
+
+WHISPER = json.loads((ROOT / "iac" / "mantle-agent-whisper-flow.json").read_text())
+QUEUE = json.loads((ROOT / "iac" / "mantle-queue-flow.json").read_text())
+
+
+def _texts(flow):
+    return [a["Parameters"].get("Text", "") for a in flow["Actions"]
+            if a["Type"] == "MessageParticipant"]
+
+
+def _has_latin_words(text):
+    """True when the text contains English words, ignoring JSONPath references.
+
+    $.Attributes.handoffReason is Latin script but is substituted at runtime, so it
+    is not something the customer or agent ever hears.
+    """
+    import re
+    stripped = re.sub(r"\$\.[A-Za-z.]+", "", text)
+    return bool(re.search(r"[A-Za-z]{3,}", stripped))
 
 
 def _terminal(state, outcome):
@@ -210,6 +229,67 @@ class HandoffFlowTests(unittest.TestCase):
                     self.assertIn(target, known)
 
 
+class ThaiHandoffAudioTests(unittest.TestCase):
+    """Everything the customer and agent hear during a transfer must be Thai.
+
+    The instance defaults were both wrong for this demo. The customer queue flow said
+    "Thank you for calling. Your call is very important to us and will be answered in
+    the order it was received." -- English, and inbound phrasing on a call the system
+    placed itself. The agent whisper read $.Queue.Name aloud, so the agent heard the
+    English words "BasicQueue" and nothing about why the call was escalated.
+    """
+
+    def test_the_contact_is_pointed_at_the_thai_flows_before_transferring(self):
+        hooks = ACTIONS["handoff-set-hooks"]["Parameters"]["EventHooks"]
+        self.assertEqual(hooks["CustomerQueue"], "${MantleQueueFlow.ContactFlowArn}")
+        self.assertEqual(hooks["AgentWhisper"], "${MantleAgentWhisperFlow.ContactFlowArn}")
+        self.assertEqual(ACTIONS["handoff-set-attributes"]["Transitions"]["NextAction"],
+                         "handoff-set-hooks")
+        self.assertEqual(ACTIONS["handoff-set-hooks"]["Transitions"]["NextAction"],
+                         "handoff-set-queue")
+
+    def test_no_english_is_spoken_in_either_flow(self):
+        for label, flow in (("agent whisper", WHISPER), ("customer queue", QUEUE)):
+            for text in _texts(flow):
+                with self.subTest(flow=label, text=text[:40]):
+                    self.assertFalse(_has_latin_words(text),
+                                     f"{label} speaks English: {text}")
+
+    def test_neither_flow_uses_inbound_phrasing(self):
+        """This is an outbound demo: the customer did not call us."""
+        for flow in (WHISPER, QUEUE):
+            for text in _texts(flow):
+                self.assertNotIn("Thank you for calling", text)
+                self.assertNotIn("ขอบคุณที่โทรมา", text)
+
+    def test_both_flows_speak_with_the_thai_voice(self):
+        for label, flow in (("agent whisper", WHISPER), ("customer queue", QUEUE)):
+            with self.subTest(flow=label):
+                voices = [a["Parameters"]["TextToSpeechVoice"] for a in flow["Actions"]
+                          if a["Type"] == "UpdateContactTextToSpeechVoice"]
+                self.assertEqual(voices, ["SUDA"])
+
+    def test_agent_hears_why_the_call_was_escalated(self):
+        brief = " ".join(_texts(WHISPER))
+        self.assertIn("$.Attributes.handoffReason", brief)
+        self.assertIn("$.Attributes.handoffSummary", brief)
+
+    def test_queue_wait_is_bounded_and_ends_with_the_callback_promise(self):
+        """Covers the case the flow cannot detect: inside hours, nobody Available.
+
+        Without a bound the caller holds indefinitely after being told an agent is
+        coming, which is the failure the handoff was meant to remove.
+        """
+        actions = {a["Identifier"]: a for a in QUEUE["Actions"]}
+        wait = actions["queue-wait"]
+        self.assertEqual(wait["Type"], "Wait")
+        self.assertTrue(0 < int(wait["Parameters"]["TimeLimitSeconds"]) <= 120)
+        self.assertEqual(wait["Transitions"]["Conditions"][0]["Condition"]["Operands"],
+                         ["WaitCompleted"])
+        self.assertIn("ติดต่อกลับ", actions["queue-no-agent"]["Parameters"]["Text"])
+        self.assertEqual(actions["queue-end"]["Type"], "DisconnectParticipant")
+
+
 class HandoffDeploymentTests(unittest.TestCase):
     def test_queue_is_a_deploy_time_parameter(self):
         """No account-specific queue id may be committed to a public repository."""
@@ -217,6 +297,23 @@ class HandoffDeploymentTests(unittest.TestCase):
         self.assertIn("HandoffQueueArn:", template)
         self.assertIn("^arn:aws:connect:[a-z0-9-]+:\\d{12}:instance/[a-f0-9-]+/queue/",
                       template)
+
+    def test_every_inline_flow_matches_its_readable_source(self):
+        """All three flows are inlined; all three must match their JSON files."""
+        template = (ROOT / "iac" / "mantle-template.yaml").read_text()
+        cases = (("  MantleAgentWhisperFlow:", "  MantleQueueFlow:",
+                  "mantle-agent-whisper-flow.json"),
+                 ("  MantleQueueFlow:", "  MantleContactFlow:", "mantle-queue-flow.json"),
+                 ("  MantleContactFlow:", "\nOutputs:", "mantle-flow.json"))
+        for start, following, source in cases:
+            with self.subTest(source=source):
+                begin = template.index(start)
+                prefix = "      Content: !Sub |\n"
+                code = template.index(prefix, begin) + len(prefix)
+                end = template.index(following, code)
+                self.assertEqual(json.loads(template[code:end].strip()),
+                                 json.loads((ROOT / "iac" / source).read_text()),
+                                 "run python3 tools/sync_inline_lambda.py")
 
     def test_inline_flow_matches_the_readable_flow(self):
         """The template is what deploys; the JSON file is what humans review.

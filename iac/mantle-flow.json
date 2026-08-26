@@ -535,6 +535,26 @@
         }
       },
       "Transitions": {
+        "NextAction": "handoff-set-hooks",
+        "Errors": [
+          {
+            "NextAction": "handoff-set-hooks",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "handoff-set-hooks",
+      "Type": "UpdateContactEventHooks",
+      "Parameters": {
+        "EventHooks": {
+          "CustomerQueue": "${MantleQueueFlow.ContactFlowArn}",
+          "AgentWhisper": "${MantleAgentWhisperFlow.ContactFlowArn}"
+        }
+      },
+      "Transitions": {
         "NextAction": "handoff-set-queue",
         "Errors": [
           {
