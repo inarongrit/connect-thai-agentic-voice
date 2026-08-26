@@ -1173,5 +1173,12 @@ def handler(event, context):
         "experienceLevel": result.get("experienceLevel", state.get("experienceLevel", "unspecified")),
         "primarySignal": state.get("primarySignal", "none"),
         "policyVersion": "v2" if POLICY_V2 else "v1",
+        # The flow compares on handoffRequired to decide whether to fetch an agent.
+        # These must be listed explicitly: this dict is the whole contract with the
+        # flow, so a key produced by _complete but omitted here simply never arrives
+        # and the transfer silently never happens.
+        "handoffRequired": result.get("handoffRequired", "false"),
+        "handoffReason": result.get("handoffReason", ""),
+        "handoffSummary": result.get("handoffSummary", ""),
     }
     return _lex_response(event, {key: str(value) for key, value in output.items()})

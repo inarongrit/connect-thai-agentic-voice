@@ -89,6 +89,52 @@ class HandoffContractTests(unittest.TestCase):
                                 f"{outcome} has no Thai reason for the agent")
 
 
+class HandoffContractReachesTheFlowTests(unittest.TestCase):
+    """The contract is the returned session attributes, not the internal result.
+
+    The first version of this feature deployed with handoffRequired missing from the
+    Lambda response: _complete produced it, the handler never copied it out, and the
+    flow's comparison matched nothing, so no call would ever have been transferred.
+    Tests that called _complete directly could not see that. These go through
+    handler() so the attribute the flow actually reads is the thing asserted.
+    """
+
+    @staticmethod
+    def _attributes(transcript, scenario="insurance"):
+        event = {
+            "inputTranscript": transcript,
+            "sessionState": {
+                "sessionAttributes": {
+                    "scenario": scenario, "customerName": "สมชาย",
+                    "amount": "15,500", "dueDate": "15 สิงหาคม 2569",
+                    "mantleState": "{}",
+                },
+                "intent": {"name": "FallbackIntent", "state": "ReadyForFulfillment"},
+            },
+        }
+        return MODULE.handler(event, None)["sessionState"]["sessionAttributes"]
+
+    def test_asking_for_a_person_reaches_the_flow_as_a_handoff(self):
+        attrs = self._attributes("ขอคุยกับเจ้าหน้าที่ครับ")
+        self.assertEqual(attrs["outcomeType"], "human_transfer")
+        self.assertEqual(attrs["handoffRequired"], "true")
+        self.assertTrue(attrs["handoffSummary"].strip())
+        self.assertIn("โอนสาย", attrs["nextPrompt"])
+        self.assertNotIn("ติดต่อกลับ", attrs["nextPrompt"])
+
+    def test_every_response_carries_the_handoff_keys(self):
+        """The flow reads these on every turn, so they must always be present."""
+        for transcript in ("ขอคุยกับเจ้าหน้าที่ครับ", "ไม่สนใจครับ", "สวัสดีครับ"):
+            with self.subTest(transcript=transcript):
+                attrs = self._attributes(transcript)
+                for key in ("handoffRequired", "handoffReason", "handoffSummary"):
+                    self.assertIn(key, attrs)
+                self.assertIn(attrs["handoffRequired"], ("true", "false"))
+
+    def test_declining_does_not_fetch_an_agent(self):
+        self.assertEqual(self._attributes("ไม่สนใจครับ")["handoffRequired"], "false")
+
+
 class HandoffFlowTests(unittest.TestCase):
     def test_outcome_is_recorded_before_the_handoff_decision(self):
         """A transfer ends the flow, so anything after it would never run."""
