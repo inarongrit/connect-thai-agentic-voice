@@ -2,12 +2,20 @@
 
 ## Before you push
 
+Requires Python 3.12 with `boto3` installed, plus Node for the JavaScript syntax
+check. The tests never call AWS — every client is patched — but the Lambda modules
+import `boto3` at module load, so it must be present.
+
 ```bash
+pip install boto3
 python3 -m unittest discover -s tests -p 'test_*.py'   # full suite must pass
 python3 tools/publish_gate.py                          # must exit 0
+node --check web/cost.js && node --check web/feedback.js
 ```
 
-CI runs both on every pull request. A red gate blocks the merge.
+There is no CI in this repository by choice: the gate is a local pre-push step.
+If you want it enforced automatically, add a workflow that installs `boto3` and
+runs the two commands above — a red gate should block the merge.
 
 ## Ground rules
 

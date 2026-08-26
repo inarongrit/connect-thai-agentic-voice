@@ -84,13 +84,18 @@ Full detail, including the Thai capability gaps and their workarounds, is in
 
 ## Verify before you publish or deploy
 
+Requires Python 3.12 with `boto3` (the tests patch every AWS client, but the
+Lambda modules import `boto3` at load time).
+
 ```bash
+pip install boto3
 python3 -m unittest discover -s tests -p 'test_*.py'   # regression suite
 python3 tools/publish_gate.py                          # blocking publish gate
 python3 tools/cost_per_call.py --show-sources          # rate provenance
 ```
 
-CI runs the gate and the suite on every pull request.
+Run both before publishing. There is no CI workflow here by choice; see
+CONTRIBUTING.md if you want the gate enforced automatically.
 
 ## Thai language reality
 

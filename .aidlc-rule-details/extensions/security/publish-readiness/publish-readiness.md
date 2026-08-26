@@ -79,7 +79,8 @@ engine; `tests/test_feedback.py` asserts the GitHub mirror leaks no model name.
 ### R7 — The gate runs before publish, and its failures are not narrated away
 (blocking)
 
-The gate is the authority. If it fails, the correct action is to fix the finding
+The gate is the authority, run locally before every publish. If it fails, the
+correct action is to fix the finding
 or add an allowlist entry **with a written justification** in
 `tools/publish_gate.py`. Do not weaken a pattern to make output green.
 

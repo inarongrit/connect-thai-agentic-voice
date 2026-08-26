@@ -9,7 +9,7 @@ service rather than this sample.
 
 ## What this repository must never contain
 
-Enforced mechanically by `tools/publish_gate.py`, which is blocking in CI:
+Enforced mechanically by `tools/publish_gate.py`, run before every publish:
 
 - AWS access keys, secret keys, session tokens, private keys
 - Personal access tokens or bearer tokens
