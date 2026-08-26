@@ -1,0 +1,192 @@
+"""Human handoff: the assistant must hand a person the context it gathered.
+
+Before this feature every referral outcome recorded an attribute and hung up, so a
+customer who asked for a human, disclosed a vulnerability, or made a complaint was
+promised a callback by an automated voice and then dropped. These tests pin the two
+halves of the fix: the dialogue must signal a handoff and carry a briefing, and the
+flow must actually route to a queue with a fallback for when nobody can answer.
+"""
+
+import importlib.util
+import json
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).parents[1]
+
+SPEC = importlib.util.spec_from_file_location(
+    "mantle_dialogue_handoff", ROOT / "lambda" / "mantle_dialogue.py"
+)
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+FLOW = json.loads((ROOT / "iac" / "mantle-flow.json").read_text())
+ACTIONS = {a["Identifier"]: a for a in FLOW["Actions"]}
+
+# Blocks confirmed against Amazon Connect by creating and deleting a throwaway flow.
+# CheckStaffing was rejected as an invalid action type, so it must never reappear:
+# a flow that fails validation cannot deploy at all.
+VERIFIED_BLOCKS = {
+    "UpdateFlowLoggingBehavior", "UpdateContactRecordingBehavior",
+    "UpdateContactTextToSpeechVoice", "UpdateContactData", "Compare",
+    "MessageParticipant", "ConnectParticipantWithLexBot", "InvokeLambdaFunction",
+    "UpdateContactAttributes", "UpdateContactTargetQueue", "CheckHoursOfOperation",
+    "TransferContactToQueue", "DisconnectParticipant",
+}
+
+
+def _terminal(state, outcome):
+    return MODULE._complete(dict(state), outcome, "ข้อความปิดการสนทนา")
+
+
+class HandoffContractTests(unittest.TestCase):
+    def test_referral_outcomes_request_a_person(self):
+        for outcome in ("human_transfer", "vulnerability_referral", "complaint_logged",
+                        "unresolved_needs_human", "licensed_rep_referral",
+                        "affordability_review"):
+            with self.subTest(outcome=outcome):
+                self.assertEqual(_terminal({"scenario": "bank"}, outcome)["handoffRequired"],
+                                 "true", f"{outcome} needs a live agent")
+
+    def test_contact_ban_and_ordinary_endings_do_not_request_a_person(self):
+        """A contact ban is honoured by ending the call, not by fetching a human.
+
+        Routing do_not_contact to an agent would put a person on the line with
+        someone who just asked never to be contacted again.
+        """
+        for outcome in ("do_not_contact", "callback", "declined", "payment_scheduled"):
+            with self.subTest(outcome=outcome):
+                result = _terminal({"scenario": "bank"}, outcome)
+                self.assertEqual(result["handoffRequired"], "false")
+                self.assertEqual(result["handoffSummary"], "")
+
+    def test_handoff_outcomes_promise_a_transfer_and_never_a_callback(self):
+        """The customer must not be told "we will call back" and then transferred.
+
+        The flow decides whether an agent is reachable, so the dialogue promises a
+        transfer only; the callback wording belongs to the fallback branch.
+        """
+        self.assertIn("โอนสาย", MODULE.HANDOFF_HOLD_TH)
+        self.assertNotIn("ติดต่อกลับ", MODULE.HANDOFF_HOLD_TH)
+
+    def test_summary_carries_the_discovery_context_to_the_agent(self):
+        state = {"scenario": "broker", "topicInterest": "กองทุนรวม",
+                 "customerGoal": "ออมเพื่อเกษียณ", "experienceLevel": "มือใหม่",
+                 "primarySignal": "hardship"}
+        summary = _terminal(state, "licensed_rep_referral")["handoffSummary"]
+        for expected in ("หลักทรัพย์", "กองทุนรวม", "ออมเพื่อเกษียณ", "มือใหม่", "hardship"):
+            self.assertIn(expected, summary)
+
+    def test_summary_stays_short_enough_to_read_aloud(self):
+        state = {"scenario": "insurance", "productInterest": "แผนคุ้มครองสุขภาพ" * 20,
+                 "customerGoal": "ก" * 200, "primarySignal": "vulnerability"}
+        self.assertLessEqual(len(_terminal(state, "vulnerability_referral")["handoffSummary"]), 260)
+
+    def test_every_handoff_outcome_has_a_thai_reason(self):
+        for outcome in MODULE.HANDOFF_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                self.assertTrue(MODULE.HANDOFF_REASON_TH.get(outcome, "").strip(),
+                                f"{outcome} has no Thai reason for the agent")
+
+
+class HandoffFlowTests(unittest.TestCase):
+    def test_outcome_is_recorded_before_the_handoff_decision(self):
+        """A transfer ends the flow, so anything after it would never run."""
+        self.assertEqual(ACTIONS["record-outcome"]["Transitions"]["NextAction"],
+                         "handoff-branch")
+
+    def test_only_flagged_contacts_are_transferred(self):
+        branch = ACTIONS["handoff-branch"]
+        self.assertEqual(branch["Parameters"]["ComparisonValue"],
+                         "$.Lex.SessionAttributes.handoffRequired")
+        self.assertEqual(branch["Transitions"]["NextAction"], "disconnect")
+        self.assertEqual([c["NextAction"] for c in branch["Transitions"]["Conditions"]],
+                         ["handoff-set-attributes"])
+
+    def test_discovery_context_is_promoted_to_contact_attributes(self):
+        """Only contact attributes reach the CCP; Lex session attributes do not."""
+        attrs = ACTIONS["handoff-set-attributes"]["Parameters"]["Attributes"]
+        self.assertEqual(attrs["handoffSummary"], "$.Lex.SessionAttributes.handoffSummary")
+        self.assertEqual(attrs["handoffReason"], "$.Lex.SessionAttributes.handoffReason")
+
+    def test_queue_is_set_before_the_hours_check(self):
+        """CheckHoursOfOperation evaluates the working queue, not the instance."""
+        self.assertEqual(ACTIONS["handoff-set-queue"]["Transitions"]["NextAction"],
+                         "handoff-hours")
+        self.assertEqual(ACTIONS["handoff-set-queue"]["Parameters"]["QueueId"],
+                         "${HandoffQueueArn}")
+
+    def test_no_path_can_drop_the_caller_silently(self):
+        """Every failure in the handoff chain must reach the callback promise.
+
+        This is the guarantee the feature rests on: a caller who was told an agent
+        is coming must hear something, never a bare disconnect.
+        """
+        for ident in ("handoff-set-queue", "handoff-hours", "handoff-transfer"):
+            with self.subTest(action=ident):
+                errors = {e["NextAction"] for e in ACTIONS[ident]["Transitions"]["Errors"]}
+                self.assertEqual(errors, {"handoff-fallback"},
+                                 f"{ident} has an error path that is not the fallback")
+
+    def test_transfer_covers_capacity_as_well_as_generic_failure(self):
+        errors = {e["ErrorType"] for e in ACTIONS["handoff-transfer"]["Transitions"]["Errors"]}
+        self.assertEqual(errors, {"NoMatchingError", "QueueAtCapacity"})
+
+    def test_outside_hours_reaches_the_fallback(self):
+        conditions = ACTIONS["handoff-hours"]["Transitions"]["Conditions"]
+        outcomes = {c["Condition"]["Operands"][0]: c["NextAction"] for c in conditions}
+        self.assertEqual(outcomes, {"True": "handoff-transfer", "False": "handoff-fallback"})
+
+    def test_fallback_promises_a_callback_and_then_ends(self):
+        fallback = ACTIONS["handoff-fallback"]
+        self.assertIn("ติดต่อกลับ", fallback["Parameters"]["Text"])
+        self.assertEqual(fallback["Transitions"]["NextAction"], "disconnect")
+
+    def test_flow_uses_only_blocks_connect_accepts(self):
+        """Guards against reintroducing a block type Connect rejects.
+
+        CheckStaffing reads as though it should exist and does not; a flow containing
+        it fails validation, so the stack cannot deploy.
+        """
+        used = {a["Type"] for a in FLOW["Actions"]}
+        self.assertEqual(used - VERIFIED_BLOCKS, set())
+        self.assertNotIn("CheckStaffing", used)
+
+    def test_every_transition_points_at_a_real_block(self):
+        known = set(ACTIONS)
+        for action in FLOW["Actions"]:
+            transitions = action["Transitions"]
+            targets = [transitions["NextAction"]] if transitions.get("NextAction") else []
+            targets += [e["NextAction"] for e in transitions.get("Errors", [])]
+            targets += [c["NextAction"] for c in transitions.get("Conditions", [])]
+            for target in targets:
+                with self.subTest(action=action["Identifier"], target=target):
+                    self.assertIn(target, known)
+
+
+class HandoffDeploymentTests(unittest.TestCase):
+    def test_queue_is_a_deploy_time_parameter(self):
+        """No account-specific queue id may be committed to a public repository."""
+        template = (ROOT / "iac" / "mantle-template.yaml").read_text()
+        self.assertIn("HandoffQueueArn:", template)
+        self.assertIn("^arn:aws:connect:[a-z0-9-]+:\\d{12}:instance/[a-f0-9-]+/queue/",
+                      template)
+
+    def test_inline_flow_matches_the_readable_flow(self):
+        """The template is what deploys; the JSON file is what humans review.
+
+        Nothing verified these agreed before, so the reviewed flow and the deployed
+        flow could differ without anything failing.
+        """
+        template = (ROOT / "iac" / "mantle-template.yaml").read_text()
+        begin = template.index("  MantleContactFlow:")
+        prefix = "      Content: !Sub |\n"
+        start = template.index(prefix, begin) + len(prefix)
+        end = template.index("\nOutputs:", start)
+        inline = json.loads(template[start:end].strip())
+        self.assertEqual(inline, FLOW,
+                         "run python3 tools/sync_inline_lambda.py")
+
+
+if __name__ == "__main__":
+    unittest.main()

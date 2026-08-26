@@ -486,6 +486,142 @@
         }
       },
       "Transitions": {
+        "NextAction": "handoff-branch",
+        "Errors": [
+          {
+            "NextAction": "handoff-branch",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "handoff-branch",
+      "Type": "Compare",
+      "Parameters": {
+        "ComparisonValue": "$.Lex.SessionAttributes.handoffRequired"
+      },
+      "Transitions": {
+        "NextAction": "disconnect",
+        "Errors": [
+          {
+            "NextAction": "disconnect",
+            "ErrorType": "NoMatchingCondition"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "handoff-set-attributes",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "true"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "handoff-set-attributes",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "handoffReason": "$.Lex.SessionAttributes.handoffReason",
+          "handoffSummary": "$.Lex.SessionAttributes.handoffSummary",
+          "outcomeType": "$.Lex.SessionAttributes.outcomeType",
+          "outcomeDetail": "$.Lex.SessionAttributes.outcomeDetail"
+        }
+      },
+      "Transitions": {
+        "NextAction": "handoff-set-queue",
+        "Errors": [
+          {
+            "NextAction": "handoff-set-queue",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "handoff-set-queue",
+      "Type": "UpdateContactTargetQueue",
+      "Parameters": {
+        "QueueId": "${HandoffQueueArn}"
+      },
+      "Transitions": {
+        "NextAction": "handoff-hours",
+        "Errors": [
+          {
+            "NextAction": "handoff-fallback",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "handoff-hours",
+      "Type": "CheckHoursOfOperation",
+      "Parameters": {},
+      "Transitions": {
+        "NextAction": "handoff-fallback",
+        "Errors": [
+          {
+            "NextAction": "handoff-fallback",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "handoff-transfer",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "True"
+              ]
+            }
+          },
+          {
+            "NextAction": "handoff-fallback",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "False"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "handoff-transfer",
+      "Type": "TransferContactToQueue",
+      "Parameters": {},
+      "Transitions": {
+        "NextAction": "disconnect",
+        "Errors": [
+          {
+            "NextAction": "handoff-fallback",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "handoff-fallback",
+            "ErrorType": "QueueAtCapacity"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "handoff-fallback",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสายค่ะ จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"
+      },
+      "Transitions": {
         "NextAction": "disconnect",
         "Errors": [
           {

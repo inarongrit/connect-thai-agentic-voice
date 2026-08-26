@@ -98,6 +98,38 @@ SIGNAL_PATTERNS = (
 )
 SHARED_SIGNAL_INTENTS = {"hardship", "vulnerability", "complaint", "do_not_contact"}
 
+# Outcomes that warrant a live agent. Each one means the conversation has reached
+# something an automated caller must not settle on its own: a request for a human,
+# a vulnerability or complaint disclosure, a regulated recommendation, or a failure
+# to make progress. do_not_contact is deliberately absent -- honouring a contact
+# ban means ending the call, not routing it to a person who would speak anyway.
+HANDOFF_OUTCOMES = frozenset({
+    "human_transfer",
+    "vulnerability_referral",
+    "complaint_logged",
+    "unresolved_needs_human",
+    "licensed_rep_referral",
+    "affordability_review",
+})
+
+# Why the agent is receiving this call, in Thai, for the whisper and the CCP.
+HANDOFF_REASON_TH = {
+    "human_transfer": "ลูกค้าขอคุยกับเจ้าหน้าที่",
+    "vulnerability_referral": "ลูกค้าเปราะบาง ต้องดูแลเป็นกรณีพิเศษ",
+    "complaint_logged": "ลูกค้าแจ้งข้อร้องเรียน",
+    "unresolved_needs_human": "ระบบไม่สามารถช่วยได้ ต้องให้เจ้าหน้าที่ดูแล",
+    "licensed_rep_referral": "ต้องผู้แนะนำการลงทุนที่ได้รับอนุญาต",
+    "affordability_review": "ขอทบทวนความคุ้มครองและค่าเบี้ยที่เหมาะสม",
+}
+
+SCENARIO_TH = {"bank": "ธนาคาร", "insurance": "ประกัน", "broker": "หลักทรัพย์"}
+
+# Spoken once, immediately before the transfer is attempted. The flow, not the
+# dialogue, decides whether an agent is actually reachable, so this promises a
+# transfer and never a callback -- the callback wording belongs to the fallback
+# branch that runs only when nobody is staffed.
+HANDOFF_HOLD_TH = "ขอโอนสายให้เจ้าหน้าที่ดูแลต่อนะคะ กรุณาถือสายรอสักครู่ค่ะ"
+
 ALLOWED_INTENTS = {
     "bank": {"dispute", "declined", "callback", "human", "unknown"} | SHARED_SIGNAL_INTENTS,
     "insurance": {
@@ -503,7 +535,38 @@ def _complete(state, outcome_type, message):
         "customerGoal": state.get("customerGoal", "unspecified"),
         "experienceLevel": state.get("experienceLevel", "unspecified"),
         "outcomeDetail": _detail_with_signal(state, message),
+        "handoffRequired": "true" if outcome_type in HANDOFF_OUTCOMES else "false",
+        "handoffReason": HANDOFF_REASON_TH.get(outcome_type, ""),
+        "handoffSummary": _handoff_summary(state, outcome_type),
     }
+
+
+def _handoff_summary(state, outcome_type):
+    """A short Thai briefing so the agent does not restart the conversation.
+
+    Everything here was already gathered during discovery. Without it the agent
+    receives a bare transfer and asks the customer the same questions again, which
+    is the failure the handoff is meant to remove. Kept compact because it is read
+    aloud in the whisper and shown in a narrow CCP panel.
+    """
+    if outcome_type not in HANDOFF_OUTCOMES:
+        return ""
+    scenario = SCENARIO_TH.get(state.get("scenario"), state.get("scenario") or "-")
+    parts = [f"งาน{scenario}", HANDOFF_REASON_TH.get(outcome_type, outcome_type)]
+    for label, value in (
+        ("สนใจ", state.get("productInterest") or state.get("topicInterest")),
+        ("เป้าหมาย", state.get("customerGoal")),
+        ("ประสบการณ์", state.get("experienceLevel")),
+        ("ยอด", state.get("paymentAmount")),
+        ("กำหนด", state.get("paymentDate")),
+        ("สะดวกให้ติดต่อ", state.get("preferredTime") or state.get("callbackTime")),
+    ):
+        if value and value != "unspecified":
+            parts.append(f"{label} {value}")
+    signal = state.get("primarySignal")
+    if signal:
+        parts.append(f"สัญญาณ {signal}")
+    return _compact(" | ".join(parts), 260)
 
 
 def _detail_with_signal(state, message):
@@ -715,11 +778,11 @@ def _apply_signal(state, signal, scenario):
     if signal == "vulnerability":
         state["outcomeDetail"] = "signal=vulnerability; specialist review required"
         return _complete(state, "vulnerability_referral",
-                         "รับทราบค่ะ ขอส่งเรื่องให้เจ้าหน้าที่ดูแลเป็นกรณีพิเศษและติดต่อกลับค่ะ")
+                         "รับทราบค่ะ ขอดูแลเป็นกรณีพิเศษ " + HANDOFF_HOLD_TH)
     if signal == "complaint":
         state["outcomeDetail"] = "signal=complaint; complaint logged"
         return _complete(state, "complaint_logged",
-                         "ขออภัยค่ะ จะบันทึกข้อร้องเรียนและให้เจ้าหน้าที่ติดต่อกลับดูแลค่ะ")
+                         "ขออภัยค่ะ จะบันทึกข้อร้องเรียนไว้ " + HANDOFF_HOLD_TH)
     # hardship
     if scenario == "bank":
         if not state.get("identityConfirmed"):
@@ -733,10 +796,10 @@ def _apply_signal(state, signal, scenario):
     if scenario == "insurance":
         state["outcomeDetail"] = "signal=hardship; affordability review requested"
         return _complete(state, "affordability_review",
-                         "รับทราบค่ะ จะให้เจ้าหน้าที่ผู้ได้รับอนุญาตทบทวนความคุ้มครองและค่าเบี้ยที่เหมาะสมค่ะ")
+                         "รับทราบค่ะ เรื่องนี้ต้องให้เจ้าหน้าที่ผู้ได้รับอนุญาตทบทวนค่ะ " + HANDOFF_HOLD_TH)
     state["outcomeDetail"] = "signal=hardship; licensed representative review required"
     return _complete(state, "licensed_rep_referral",
-                     "รับทราบค่ะ เรื่องนี้ต้องให้ผู้แนะนำการลงทุนที่ได้รับอนุญาตดูแลค่ะ")
+                     "รับทราบค่ะ เรื่องนี้ต้องให้ผู้แนะนำการลงทุนที่ได้รับอนุญาตดูแลค่ะ " + HANDOFF_HOLD_TH)
 
 
 DEFER_RE = re.compile(r"ขอผ่อนผัน|พักชำระ|พักหนี้|เลื่อน|ไม่ไหว|ไม่ได้เลย|ไม่มีจริง|ยังไม่ได้|ไม่มีเลย")
@@ -792,7 +855,7 @@ def _common_intent(state, classified):
     if intent == "declined":
         return _complete(state, "declined", "รับทราบค่ะ ขอบคุณที่สละเวลาค่ะ")
     if intent == "human":
-        return _complete(state, "human_transfer", "รับทราบค่ะ จะให้เจ้าหน้าที่ติดต่อกลับค่ะ")
+        return _complete(state, "human_transfer", "รับทราบค่ะ " + HANDOFF_HOLD_TH)
     if intent == "callback":
         raw = classified.get("rawValue", "")
         if raw and _looks_datetime(raw):
@@ -1088,7 +1151,7 @@ def handler(event, context):
         if state["noProgress"] >= MAX_REPEATS:
             state["outcomeDetail"] = "unresolved after repeated prompts"
             result = _complete(state, "unresolved_needs_human",
-                               "ขออภัยค่ะ ขอส่งเรื่องให้เจ้าหน้าที่ติดต่อกลับเพื่อดูแลต่อค่ะ")
+                               "ขออภัยค่ะ " + HANDOFF_HOLD_TH)
     state["lastModel"] = classified.get("model", "deterministic")
     state["lastLatencyMs"] = classified.get("latencyMs", 0)
     output = {
