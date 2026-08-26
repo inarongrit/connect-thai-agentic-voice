@@ -21,10 +21,10 @@
         "TextToSpeechEngine": "connect:agentic"
       },
       "Transitions": {
-        "NextAction": "queue-hold-message",
+        "NextAction": "queue-hold-loop",
         "Errors": [
           {
-            "NextAction": "queue-hold-message",
+            "NextAction": "queue-hold-loop",
             "ErrorType": "NoMatchingError"
           }
         ],
@@ -32,43 +32,28 @@
       }
     },
     {
-      "Identifier": "queue-hold-message",
-      "Type": "MessageParticipant",
+      "Identifier": "queue-hold-loop",
+      "Type": "MessageParticipantIteratively",
       "Parameters": {
-        "Text": "กรุณาถือสายรอสักครู่นะคะ ระบบกำลังโอนสายให้เจ้าหน้าที่ดูแลต่อค่ะ"
+        "InterruptFrequencySeconds": "60",
+        "Messages": [
+          {
+            "Text": "กรุณาถือสายรอสักครู่นะคะ ระบบกำลังโอนสายให้เจ้าหน้าที่ดูแลต่อค่ะ"
+          },
+          {
+            "PromptId": "${HoldPromptArn}"
+          }
+        ]
       },
       "Transitions": {
-        "NextAction": "queue-wait",
-        "Errors": [
-          {
-            "NextAction": "queue-wait",
-            "ErrorType": "NoMatchingError"
-          }
-        ],
-        "Conditions": []
-      }
-    },
-    {
-      "Identifier": "queue-wait",
-      "Type": "Wait",
-      "Parameters": {
-        "TimeLimitSeconds": "45"
-      },
-      "Transitions": {
-        "NextAction": "queue-no-agent",
-        "Errors": [
-          {
-            "NextAction": "queue-no-agent",
-            "ErrorType": "NoMatchingError"
-          }
-        ],
+        "Errors": [],
         "Conditions": [
           {
             "NextAction": "queue-no-agent",
             "Condition": {
               "Operator": "Equals",
               "Operands": [
-                "WaitCompleted"
+                "MessagesInterrupted"
               ]
             }
           }

@@ -39,8 +39,17 @@ QUEUE = json.loads((ROOT / "iac" / "mantle-queue-flow.json").read_text())
 
 
 def _texts(flow):
-    return [a["Parameters"].get("Text", "") for a in flow["Actions"]
-            if a["Type"] == "MessageParticipant"]
+    """Every spoken string, including the ones inside a loop block's Messages."""
+    spoken = []
+    for action in flow["Actions"]:
+        params = action.get("Parameters", {})
+        if action["Type"] in ("MessageParticipant", "MessageParticipantIteratively"):
+            if params.get("Text"):
+                spoken.append(params["Text"])
+            for message in params.get("Messages", []):
+                if message.get("Text"):
+                    spoken.append(message["Text"])
+    return spoken
 
 
 def _has_latin_words(text):
@@ -274,20 +283,36 @@ class ThaiHandoffAudioTests(unittest.TestCase):
         self.assertIn("$.Attributes.handoffReason", brief)
         self.assertIn("$.Attributes.handoffSummary", brief)
 
-    def test_queue_wait_is_bounded_and_ends_with_the_callback_promise(self):
-        """Covers the case the flow cannot detect: inside hours, nobody Available.
+    def test_hold_uses_the_loop_block_not_wait(self):
+        """Wait fails at runtime in a queue flow and must not come back.
 
-        Without a bound the caller holds indefinitely after being told an agent is
-        coming, which is the failure the handoff was meant to remove.
+        A Wait block here errored after 170ms with no error type, so every caller
+        fell straight through to the no-agent message and was disconnected -- while
+        the agent was in fact being connected, its whisper firing 1.7 seconds later.
+        MessageParticipantIteratively is what the instance default and the AWS sample
+        both use to hold a caller, and Connect interrupts it when an agent answers.
         """
+        types = {a["Type"] for a in QUEUE["Actions"]}
+        self.assertIn("MessageParticipantIteratively", types)
+        self.assertNotIn("Wait", types)
+
+    def test_hold_is_bounded_and_ends_with_the_callback_promise(self):
         actions = {a["Identifier"]: a for a in QUEUE["Actions"]}
-        wait = actions["queue-wait"]
-        self.assertEqual(wait["Type"], "Wait")
-        self.assertTrue(0 < int(wait["Parameters"]["TimeLimitSeconds"]) <= 120)
-        self.assertEqual(wait["Transitions"]["Conditions"][0]["Condition"]["Operands"],
-                         ["WaitCompleted"])
+        loop = actions["queue-hold-loop"]
+        interrupt = int(loop["Parameters"]["InterruptFrequencySeconds"])
+        # Long enough that a staffed agent connects first -- observed at about 8
+        # seconds after enqueue -- so the bound only fires when nobody answers.
+        self.assertGreaterEqual(interrupt, 45)
+        self.assertLessEqual(interrupt, 180)
+        self.assertEqual(loop["Transitions"]["Conditions"][0]["Condition"]["Operands"],
+                         ["MessagesInterrupted"])
         self.assertIn("ติดต่อกลับ", actions["queue-no-agent"]["Parameters"]["Text"])
         self.assertEqual(actions["queue-end"]["Type"], "DisconnectParticipant")
+
+    def test_hold_audio_is_not_committed_as_an_account_specific_arn(self):
+        loop = {a["Identifier"]: a for a in QUEUE["Actions"]}["queue-hold-loop"]
+        prompts = [m["PromptId"] for m in loop["Parameters"]["Messages"] if "PromptId" in m]
+        self.assertEqual(prompts, ["${HoldPromptArn}"])
 
 
 class HandoffDeploymentTests(unittest.TestCase):
