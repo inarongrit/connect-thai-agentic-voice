@@ -1,13 +1,3 @@
-# CI definition for this repository.
-#
-# It lives here rather than at .github/workflows/ci.yml because GitHub refuses a
-# push that creates a workflow file unless the token also carries the "Workflows"
-# permission. To enable it, copy this file to .github/workflows/ci.yml — either
-# in the GitHub web UI (your browser session is not subject to the token scope),
-# or from a client whose token has Workflows: Read and write.
-#
-# It is the enforcement point for the publish-readiness gate, so enabling it is
-# recommended before accepting outside contributions.
 name: ci
 
 on:

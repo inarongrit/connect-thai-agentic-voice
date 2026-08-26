@@ -7,12 +7,7 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # full suite must pass
 python3 tools/publish_gate.py                          # must exit 0
 ```
 
-CI runs both on every pull request once enabled. A red gate blocks the merge.
-
-The workflow is provided at `docs/ci-workflow.yml`. Copy it to
-`.github/workflows/ci.yml` to activate it — GitHub rejects pushes that create
-workflow files unless the pushing token holds the "Workflows" permission, so it
-ships outside that path.
+CI runs both on every pull request. A red gate blocks the merge.
 
 ## Ground rules
 

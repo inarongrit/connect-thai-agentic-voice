@@ -90,8 +90,7 @@ python3 tools/publish_gate.py                          # blocking publish gate
 python3 tools/cost_per_call.py --show-sources          # rate provenance
 ```
 
-CI runs the gate and the suite on every pull request once enabled — copy
-`docs/ci-workflow.yml` to `.github/workflows/ci.yml` to activate it.
+CI runs the gate and the suite on every pull request.
 
 ## Thai language reality
 
