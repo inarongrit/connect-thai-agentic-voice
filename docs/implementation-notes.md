@@ -1409,3 +1409,35 @@ Also remove, none of which CloudFormation owns:
 ten other CloudFront distributions in this account. Removing the alternate domain
 name from this distribution is sufficient; ACM refuses to delete an in-use
 certificate anyway.
+
+## What is actually under infrastructure-as-code
+
+Worth stating plainly, because the repository layout implies more coverage than
+exists. Only `iac/mantle-template.yaml` corresponds to a deployed CloudFormation
+stack, `fsi-mantle-experiment` (11 resources, adopted by the CDK app in `cdk/`).
+
+`iac/template.yaml` describes 22 resources for the main path -- the web bucket,
+CloudFront distribution, HTTP API, DynamoDB feedback table, the session-context and
+trigger Lambdas, the Q in Connect assistant and knowledge base -- and **none of them
+are stack-managed**. The live equivalents exist but carry no
+`aws:cloudformation:stack-name` tag, so they were created outside CloudFormation:
+
+| Resource | Owning stack |
+| --- | --- |
+| `fsi-mantle-dialogue` | `fsi-mantle-experiment` |
+| `fsi-qic-session-context` | none |
+| `fsi-outbound-demo-trigger` | none |
+| `fsi-thai-post-contact-analyzer` | none |
+| `fsi-outbound-demo-901717345697` (bucket) | none |
+| `fsi-demo-feedback` (table) | none |
+
+Two consequences follow. First, `iac/template.yaml` has never created anything; it
+validates, but it is a reconstruction of resources built live, and deploying it into
+this account as-is would collide with the resources it describes. Redeployability of
+the main path is therefore unproven, not proven. Second, CDK adoption could only be
+applied to the mantle stack, since adoption requires a stack to adopt.
+
+Bringing the unmanaged resources under management is a CloudFormation resource-import
+exercise: import them into a stack with matching logical ids, verify an empty change
+set, and only then convert to constructs. That is deliberately not attempted while a
+demo depends on them.

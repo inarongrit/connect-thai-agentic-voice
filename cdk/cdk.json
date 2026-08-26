@@ -1,0 +1,10 @@
+{
+  "app": "python3 app.py",
+  "versionReporting": false,
+  "pathMetadata": false,
+  "assetMetadata": false,
+  "context": {
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": ["aws"]
+  }
+}
