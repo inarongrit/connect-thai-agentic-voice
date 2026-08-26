@@ -1,0 +1,71 @@
+# CI definition for this repository.
+#
+# It lives here rather than at .github/workflows/ci.yml because GitHub refuses a
+# push that creates a workflow file unless the token also carries the "Workflows"
+# permission. To enable it, copy this file to .github/workflows/ci.yml — either
+# in the GitHub web UI (your browser session is not subject to the token scope),
+# or from a client whose token has Workflows: Read and write.
+#
+# It is the enforcement point for the publish-readiness gate, so enabling it is
+# recommended before accepting outside contributions.
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Blocking: no credential, no unparameterised identifier, redeploy intact.
+      - name: Publish-readiness gate
+        run: python3 tools/publish_gate.py
+
+      - name: Regression suite
+        run: python3 -m unittest discover -s tests -p 'test_*.py' --verbose
+
+      - name: Python syntax
+        run: python3 -m py_compile lambda/*.py tools/*.py
+
+      - name: JavaScript syntax
+        run: |
+          node --check web/cost.js
+          node --check web/feedback.js
+          node --check web/webrtc-client.js
+
+      - name: Shell syntax
+        run: bash -n iac/post-deploy.sh
+
+      - name: CloudFormation parses
+        run: |
+          python3 - <<'PY'
+          import sys
+          try:
+              import yaml
+          except ImportError:
+              print("PyYAML unavailable; skipping structural parse")
+              sys.exit(0)
+          # CloudFormation short forms are not plain YAML; only check it loads as text.
+          for name in ("iac/template.yaml", "iac/mantle-template.yaml"):
+              with open(name, encoding="utf-8") as handle:
+                  body = handle.read()
+              assert "AWSTemplateFormatVersion" in body, name
+              print(f"{name}: {len(body)} bytes")
+          PY

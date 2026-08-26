@@ -1,0 +1,1283 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Feature-flagged Thai GPT-5.6 Luna/Terra dialogue experiment for Amazon Connect
+
+Parameters:
+  ConnectInstanceArn:
+    Type: String
+    AllowedPattern: ^arn:aws:connect:[a-z0-9-]+:\d{12}:instance/[a-f0-9-]+$
+  ConnectInstanceId:
+    Type: String
+  SessionContextFunctionArn:
+    Type: String
+    AllowedPattern: ^arn:aws:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9-_]+$
+
+Resources:
+  MantleDialogueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub fsi-mantle-dialogue-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockLunaTerraAndLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.openai.gpt-5.6-luna
+                  - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.openai.gpt-5.6-terra
+                  - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:project/default
+                  - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/openai.gpt-5.6-luna
+                  - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/openai.gpt-5.6-terra
+              - Effect: Allow
+                Action: [ logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents ]
+                Resource: '*'
+
+  MantleDialogueFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fsi-mantle-dialogue
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt MantleDialogueRole.Arn
+      Timeout: 25
+      MemorySize: 256
+      Environment:
+        Variables:
+          LUNA_MODEL_ID: us.openai.gpt-5.6-luna
+          TERRA_MODEL_ID: us.openai.gpt-5.6-terra
+          MAX_TURNS: '10'
+      Code:
+        ZipFile: |
+          """Feature-flagged Thai dialogue engine using GPT-5.6 on Amazon Bedrock."""
+          import json
+          import os
+          import re
+          import time
+          
+          import boto3
+          
+          bedrock = boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+          
+          LUNA_MODEL_ID = os.environ.get("LUNA_MODEL_ID", "us.openai.gpt-5.6-luna")
+          TERRA_MODEL_ID = os.environ.get("TERRA_MODEL_ID", "us.openai.gpt-5.6-terra")
+          MAX_TURNS = int(os.environ.get("MAX_TURNS", "10"))
+          POLICY_V2 = os.environ.get("NEGOTIATION_POLICY_V2", "true").lower() == "true"
+          MAX_REPEATS = int(os.environ.get("MAX_REPEATS", "1"))
+          
+          _THAI_DIGITS = ("ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า")
+          
+          
+          def _thai_integer_words(value):
+              """Render a non-negative integer as continuous Thai number words."""
+              value = int(value)
+              if value == 0:
+                  return _THAI_DIGITS[0]
+              if value >= 1_000_000:
+                  millions, remainder = divmod(value, 1_000_000)
+                  return _thai_integer_words(millions) + "ล้าน" + (
+                      _thai_integer_words(remainder) if remainder else ""
+                  )
+              words = []
+              for divisor, label in ((100_000, "แสน"), (10_000, "หมื่น"), (1_000, "พัน"), (100, "ร้อย")):
+                  digit, value = divmod(value, divisor)
+                  if digit:
+                      words.append(_THAI_DIGITS[digit] + label)
+              tens, units = divmod(value, 10)
+              if tens == 1:
+                  words.append("สิบ")
+              elif tens == 2:
+                  words.append("ยี่สิบ")
+              elif tens:
+                  words.append(_THAI_DIGITS[tens] + "สิบ")
+              if units:
+                  words.append("เอ็ด" if units == 1 and words else _THAI_DIGITS[units])
+              return "".join(words)
+          
+          
+          def _thai_baht_words(amount):
+              """Render a decimal currency attribute without exposing punctuation to TTS."""
+              raw = re.sub(r"[\s,]", "", str(amount or ""))
+              if not re.fullmatch(r"\d+(?:\.\d{1,2})?", raw):
+                  return (str(amount or "ยอดตามที่แจ้ง").strip() + "บาท").replace(" ", "")
+              whole_text, dot, fraction = raw.partition(".")
+              whole = int(whole_text)
+              satang = int((fraction + "00")[:2]) if dot else 0
+              spoken = _thai_integer_words(whole) + "บาท"
+              return spoken + (_thai_integer_words(satang) + "สตางค์" if satang else "ถ้วน")
+          
+          
+          SCENARIOS = {"bank", "insurance", "broker"}
+          YES_WORDS = re.compile(r"ใช่|ถูกต้อง|ยืนยัน|ตกลง|โอเค|ได้เลย|ได้ครับ|ได้ค่ะ|ได้คะ|ครับผม")
+          NO_WORDS = re.compile(r"ไม่ใช่|ไม่ถูก|ไม่ต้อง|ไม่สะดวก|ไม่ได้|ผิด|ขอแก้|เปลี่ยน")
+          DATE_WORDS = re.compile(
+              r"วัน|วันที่|พรุ่งนี้|มะรืน|จันทร์|อังคาร|พุธ|พฤหัส|ศุกร์|เสาร์|อาทิตย์|"
+              r"เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|ทุ่ม|โมง|นาฬิกา|มกราคม|กุมภาพันธ์|มีนาคม|"
+              r"เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม|"
+              r"เดือน|สัปดาห์|ต้นเดือน|กลางเดือน|ปลายเดือน|สิ้นเดือน|อีก|"
+              r"มกรา|กุมภา|มีนา|เมษา|พฤษภา|มิถุนา|กรกฎา|สิงหา|กันยา|ตุลา|พฤศจิกา|ธันวา"
+          )
+          AMOUNT_WORDS = re.compile(
+              r"[0-9๐-๙]|ศูนย์|หนึ่ง|เอ็ด|สอง|ยี่|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|"
+              r"ร้อย|พัน|หมื่น|แสน|ล้าน|บาท"
+          )
+          
+          # Deterministic Thai signal detection. Kept as explicit patterns rather than left
+          # to the model so that hardship and vulnerability handling stays auditable.
+          DNC_RE = re.compile(
+              r"ห้ามโทร|อย่าโทรมา|ไม่ต้องโทรมา|เลิกโทร|อย่าติดต่อ|ยกเลิกการติดต่อ|ขอถอนความยินยอม"
+          )
+          VULNERABLE_RE = re.compile(
+              r"ป่วยหนัก|ป่วยอยู่|นอนโรงพยาบาล|เข้าโรงพยาบาล|เสียชีวิต|พิการ|ทุพพลภาพ|"
+              r"ดูแลผู้ป่วย|ผู้สูงอายุ|คนพิการ"
+          )
+          COMPLAINT_RE = re.compile(
+              r"ร้องเรียน|ไม่พอใจ|บริการแย่|แย่มาก|โทรมาบ่อย|รบกวนมาก|จะฟ้อง|เอาเรื่อง|คุยไม่รู้เรื่อง|ฟังไม่รู้เรื่อง"
+          )
+          HARDSHIP_RE = re.compile(
+              r"ไม่มีเงิน|ไม่มีตังค์|ไม่มีตัง|ไม่มีสตางค์|เงินไม่พอ|จ่ายไม่ได้|ชำระไม่ได้|ผ่อนไม่ไหว|"
+              r"ไม่ไหว|ขอเลื่อน|เลื่อนไป|ขอผ่อนผัน|ขอพักชำระ|พักหนี้|ขอลดค่างวด|ตกงาน|ถูกเลิกจ้าง|"
+              r"รายได้ลด|ลำบาก|เดือดร้อน|ยังไม่มีเงิน|ขอไม่จ่าย|ขาดทุน|ติดดอย"
+          )
+          # Most protective signal first: a contact ban or a vulnerable customer outranks
+          # any collections or sales objective.
+          SIGNAL_PATTERNS = (
+              ("do_not_contact", DNC_RE),
+              ("vulnerability", VULNERABLE_RE),
+              ("complaint", COMPLAINT_RE),
+              ("hardship", HARDSHIP_RE),
+          )
+          SHARED_SIGNAL_INTENTS = {"hardship", "vulnerability", "complaint", "do_not_contact"}
+          
+          ALLOWED_INTENTS = {
+              "bank": {"dispute", "declined", "callback", "human", "unknown"} | SHARED_SIGNAL_INTENTS,
+              "insurance": {
+                  "need_health",
+                  "need_life",
+                  "need_savings",
+                  "appointment",
+                  "declined",
+                  "callback",
+                  "product_question",
+                  "human",
+                  "unknown",
+              } | SHARED_SIGNAL_INTENTS,
+              "broker": {
+                  "seminar",
+                  "consultation",
+                  "advice_request",
+                  "declined",
+                  "callback",
+                  "human",
+                  "unknown",
+              } | SHARED_SIGNAL_INTENTS,
+          }
+          
+          
+          def _initial_state(scenario):
+              return {
+                  "version": 1,
+                  "scenario": scenario,
+                  "stage": {
+                      "bank": "verify_identity",
+                      "insurance": "qualify_need",
+                      "broker": "choose_action",
+                  }[scenario],
+                  "turn": 0,
+                  "identityConfirmed": False,
+              }
+          
+          
+          def _load_state(attributes, scenario):
+              try:
+                  state = json.loads(attributes.get("mantleState", "{}"))
+              except (TypeError, json.JSONDecodeError):
+                  state = {}
+              if state.get("scenario") != scenario or not isinstance(state.get("turn"), int):
+                  state = _initial_state(scenario)
+              return state
+          
+          
+          def _compact(text, limit=160):
+              return " ".join(str(text or "").strip().split())[:limit]
+          
+          
+          def _despace(text):
+              """Remove whitespace so ASR word/vowel splitting cannot hide a signal.
+          
+              Advanced ASR returns turns such as "ตอนนี้ ไม่มี เงิน จ ่าย"; Thai has no
+              inter-word spaces, so stripping them is safe and makes matching reliable.
+              """
+              return re.sub(r"\s+", "", str(text or ""))
+          
+          
+          def _is_yes(text):
+              compact = _despace(_compact(text, 80))
+              if NO_WORDS.search(compact):
+                  return False
+              return bool(YES_WORDS.search(compact) or compact in {"ครับ", "ค่ะ", "คะ"})
+          
+          
+          def _is_no(text):
+              return bool(NO_WORDS.search(_despace(_compact(text, 80))))
+          
+          
+          def _identity_no(text):
+              return bool(re.search(r"ไม่ใช่|ผิดคน|โทรผิด|ไม่ได้ชื่อ", _despace(_compact(text, 100))))
+          
+          
+          def _identity_yes(text):
+              compact = _despace(_compact(text, 100))
+              return not _identity_no(compact) and bool(YES_WORDS.search(compact) or compact in {"ครับ", "ค่ะ", "คะ"})
+          
+          
+          def _payment_type(text):
+              compact = _despace(_compact(text, 100))
+              matches = []
+              if re.search(r"เต็ม|ทั้งหมด|ชำระหมด|จ่ายหมด", compact):
+                  matches.append("full")
+              if re.search(r"บางส่วน|ส่วนหนึ่ง", compact):
+                  matches.append("partial")
+              if re.search(r"ผ่อน|แบ่ง|งวด", compact):
+                  matches.append("installment")
+              return matches[0] if len(set(matches)) == 1 else None
+          
+          
+          def _looks_datetime(text):
+              compact = _despace(_compact(text, 120))
+              return len(compact) >= 2 and bool(DATE_WORDS.search(compact) or re.search(r"[0-9๐-๙]{1,2}([:/.-][0-9๐-๙]{1,2})?", compact))
+          
+          
+          def _looks_amount(text):
+              compact = _despace(_compact(text, 120))
+              return len(compact) >= 2 and bool(AMOUNT_WORDS.search(compact))
+          
+          
+          POLITE_SUFFIXES = (
+              "นะครับผม",
+              "นะครับ",
+              "นะคะ",
+              "ครับผม",
+              "ครับ",
+              "ค่ะ",
+              "คะ",
+              "ค่า",
+              "จ้า",
+              "จ๋า",
+              "จ้ะ",
+              "ฮะ",
+              "นะ",
+          )
+          
+          RELATIVE_DAY_RE = re.compile(
+              r"^(พรุ่งนี้|มะรืนนี้|มะรืน|วันนี้|คืนนี้|เช้านี้|สายนี้|บ่ายนี้|เย็นนี้|"
+              r"ต้นเดือน|กลางเดือน|ปลายเดือน|สิ้นเดือน|ต้นสัปดาห์|ปลายสัปดาห์|สัปดาห์|"
+              r"เดือนนี้|เดือนหน้า|อีก)"
+          )
+          
+          DAY_PREFIX_RE = re.compile(r"^(วันจันทร์|วันอังคาร|วันพุธ|วันพฤหัส|วันศุกร์|วันเสาร์|วันอาทิตย์|วัน)")
+          
+          
+          def _strip_politeness(value):
+              text = re.sub(r"[\s.,!?]+$", "", str(value or "").strip())
+              changed = True
+              while changed:
+                  changed = False
+                  for suffix in POLITE_SUFFIXES:
+                      if text.endswith(suffix) and len(text) > len(suffix):
+                          text = re.sub(r"[\s.,!?]+$", "", text[: -len(suffix)])
+                          changed = True
+              return text.strip()
+          
+          
+          def _date_phrase(value):
+              spoken = _strip_politeness(value)
+              if not spoken:
+                  return ""
+              if spoken.startswith("วันที่"):
+                  return f"ใน{spoken}"
+              if RELATIVE_DAY_RE.match(spoken):
+                  return spoken
+              if DAY_PREFIX_RE.match(spoken):
+                  return f"ใน{spoken}"
+              return f"ในวันที่ {spoken}"
+          
+          
+          def _safe_model_message(value, fallback):
+              message = _compact(value, 220)
+              if not message or re.search(r"[0-9]", message):
+                  return fallback
+              message = re.sub(r"(นะ)?ครับ(ผม)?[\s.]*$", "ค่ะ", message)
+              if not message.endswith(("ค่ะ", "คะ")):
+                  message += "ค่ะ"
+              return message
+          
+          
+          def _facts(attributes, state):
+              facts = {
+                  "customerName": _compact(attributes.get("customerName") or "ลูกค้า", 50),
+              }
+              if state.get("scenario") == "bank" and state.get("identityConfirmed"):
+                  facts["amount"] = _compact(attributes.get("amount"), 40)
+                  facts["dueDate"] = _compact(attributes.get("dueDate"), 80)
+              return facts
+          
+          
+          def _classifier_prompt(scenario, state, transcript, facts):
+              shared = "hardship, vulnerability, complaint, do_not_contact"
+              descriptions = {
+                  "bank": f"dispute, declined, callback, human, unknown, {shared}",
+                  "insurance": f"need_health, need_life, need_savings, appointment, declined, callback, product_question, human, unknown, {shared}",
+                  "broker": f"seminar, consultation, advice_request, declined, callback, human, unknown, {shared}",
+              }
+              return (
+                  "You classify one Thai customer turn for a short financial-services call. "
+                  "Never invent a date, amount, need, or customer fact. Preserve rawValue exactly as a substring of the transcript. "
+                  "Return only one JSON object with keys intent, message, rawValue, confidence. "
+                  f"Allowed intents: {descriptions[scenario]}. confidence is 0 to 1. "
+                  "message is one short natural Thai sentence in female register ending ค่ะ or คะ, with no Arabic digits. "
+                  "When the sentence offers choices, separate each option with a comma so the caller hears a pause, "
+                  "for example ต้องการความคุ้มครองด้านสุขภาพ, ชีวิต, หรือการออมคะ. A comma is the only punctuation allowed. "
+                  f"Scenario={scenario}; stage={state.get('stage')}; facts={json.dumps(facts, ensure_ascii=False)}; "
+                  f"transcript={json.dumps(transcript, ensure_ascii=False)}"
+              )
+          
+          
+          def _extract_json(text):
+              compact = str(text or "").strip()
+              start, end = compact.find("{"), compact.rfind("}")
+              if start < 0 or end <= start:
+                  raise ValueError("model did not return JSON")
+              value = json.loads(compact[start : end + 1])
+              if not isinstance(value, dict):
+                  raise ValueError("model JSON is not an object")
+              return value
+          
+          
+          def _invoke(model_id, prompt):
+              started = time.perf_counter()
+              response = bedrock.converse(
+                  modelId=model_id,
+                  messages=[{"role": "user", "content": [{"text": prompt}]}],
+                  inferenceConfig={"maxTokens": 220},
+              )
+              elapsed_ms = round((time.perf_counter() - started) * 1000)
+              text = "".join(
+                  block.get("text", "")
+                  for block in response.get("output", {}).get("message", {}).get("content", [])
+              )
+              result = _extract_json(text)
+              return result, elapsed_ms
+          
+          
+          def _classify(scenario, state, transcript, facts):
+              prompt = _classifier_prompt(scenario, state, transcript, facts)
+              total_ms = 0
+              errors = []
+              for model_id in (LUNA_MODEL_ID, TERRA_MODEL_ID):
+                  try:
+                      result, elapsed_ms = _invoke(model_id, prompt)
+                      total_ms += elapsed_ms
+                      intent = str(result.get("intent", "unknown")).strip()
+                      confidence = float(result.get("confidence", 0))
+                      raw_value = _compact(result.get("rawValue"), 120)
+                      if intent not in ALLOWED_INTENTS[scenario]:
+                          raise ValueError("unsupported intent")
+                      if raw_value and raw_value not in transcript:
+                          raise ValueError("raw value was not verbatim")
+                      if confidence < 0.58 and model_id == LUNA_MODEL_ID:
+                          continue
+                      return {
+                          "intent": intent,
+                          "message": result.get("message", ""),
+                          "rawValue": raw_value,
+                          "confidence": confidence,
+                          "model": model_id,
+                          "latencyMs": total_ms,
+                      }
+                  except Exception as error:  # noqa: BLE001
+                      errors.append(type(error).__name__)
+              return {
+                  "intent": "unknown",
+                  "message": "ขออภัยค่ะ กรุณาพูดคำตอบสั้น ๆ อีกครั้งนะคะ",
+                  "rawValue": "",
+                  "confidence": 0,
+                  "model": "fallback",
+                  "latencyMs": total_ms,
+                  "errors": errors,
+              }
+          
+          
+          def _readback(state, field, raw):
+              if field == "paymentDate":
+                  payment = {
+                      "full": "ชำระเต็มจำนวน",
+                      "partial": "ชำระบางส่วน",
+                      "installment": "แบ่งชำระ",
+                  }.get(state.get("paymentType"), "ชำระ")
+                  return f"ขอยืนยันนะคะ คุณจะ{payment}{_date_phrase(raw)} ถูกต้องไหมคะ"
+              if field == "paymentAmount":
+                  payment = "แบ่งชำระ" if state.get("paymentType") == "installment" else "ชำระบางส่วน"
+                  when = _date_phrase(state.get("paymentDate"))
+                  amount = _strip_politeness(raw)
+                  return f"ขอยืนยันนะคะ คุณจะ{payment}{when} จำนวน {amount} ถูกต้องไหมคะ"
+              if field == "preferredTime":
+                  return f"ขอยืนยันเวลานัดหมาย {_strip_politeness(raw)} ถูกต้องไหมคะ"
+              return f"ขอยืนยันเวลาที่ให้โทรกลับ {_strip_politeness(raw)} ถูกต้องไหมคะ"
+          
+          
+          def _ask_for(field):
+              return {
+                  "paymentDate": "กรุณาระบุวันที่สะดวกชำระค่ะ",
+                  "paymentAmount": "กรุณาระบุจำนวนเงินงวดแรกค่ะ",
+                  "preferredTime": "กรุณาระบุวัน, หรือเวลาที่สะดวกนัดหมายค่ะ",
+                  "callbackTime": "กรุณาระบุวัน, หรือเวลาที่สะดวกให้โทรกลับค่ะ",
+              }[field]
+          
+          
+          THAI_NUM_PART = (
+              r"(?:[0-9๐-๙]+|ยี่|เอ็ด|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|ร้อย|พัน|หมื่น|แสน|ล้าน)"
+          )
+          # ASR splits spoken numbers ("ห้า พัน บาท"), so allow spaces between the parts.
+          THAI_NUM = rf"(?:{THAI_NUM_PART}(?:\s*{THAI_NUM_PART})*)"
+          MONTHS = (
+              r"(?:มกรา(?:คม)?|กุมภา(?:พันธ์)?|มีนา(?:คม)?|เมษา(?:ยน)?|พฤษภา(?:คม)?|มิถุนา(?:ยน)?|"
+              r"กรกฎา(?:คม)?|สิงหา(?:คม)?|กันยา(?:ยน)?|ตุลา(?:คม)?|พฤศจิกา(?:ยน)?|ธันวา(?:คม)?)"
+          )
+          WEEKDAYS = r"(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|พฤหัส|ศุกร์|เสาร์|อาทิตย์)"
+          DAY_PERIOD = r"(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|กลางวัน|กลางคืน)"
+          CLOCK = rf"(?:{THAI_NUM}\s*(?:โมง|ทุ่ม|นาฬิกา)(?:\s*(?:ครึ่ง|{THAI_NUM}\s*นาที))?(?:\s*{DAY_PERIOD})?)"
+          
+          DATE_PATTERNS = (
+              rf"วันที่\s*{THAI_NUM}(?:\s*{MONTHS})?",
+              rf"{THAI_NUM}\s*{MONTHS}",
+              r"(?:วัน)?มะรืนนี้|(?:วัน)?มะรืน",
+              r"(?:วัน)?พรุ่งนี้",
+              r"วันนี้",
+              rf"วัน{WEEKDAYS}(?:หน้า|นี้)?",
+              rf"{WEEKDAYS}(?:หน้า|นี้)?",
+              r"(?:ต้น|กลาง|ปลาย|สิ้น)(?:เดือน|สัปดาห์)(?:นี้|หน้า)?",
+              r"(?:เดือน|สัปดาห์)(?:นี้|หน้า)",
+              rf"อีก\s*{THAI_NUM}\s*(?:วัน|สัปดาห์|เดือน)",
+          )
+          TIME_PATTERNS = (
+              CLOCK,
+              rf"{DAY_PERIOD}\s*{THAI_NUM}(?:\s*โมง)?(?:\s*ครึ่ง)?",
+              rf"{DAY_PERIOD}นี้",
+              DAY_PERIOD,
+          )
+          AMOUNT_PATTERN = rf"{THAI_NUM}(?:\s*(?:จุด|\.)\s*{THAI_NUM})?\s*บาท"
+          
+          
+          def _first_match(patterns, text):
+              best = None
+              for pattern in patterns:
+                  found = re.search(pattern, text)
+                  if found and (best is None or found.start() < best.start()):
+                      best = found
+              return best
+          
+          
+          # Bare อาทิตย์ followed by หน้า/นี้ means "week", so prefixing วัน would turn
+          # "next week" into "next Sunday".
+          WEEK_WORD_RE = re.compile(r"^อาทิตย์(?:หน้า|นี้|ก่อน)")
+          SPECIFIC_WEEKDAYS = r"(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|พฤหัส|ศุกร์|เสาร์)"
+          SPECIFIC_WHEN_RE = re.compile(
+              rf"วันที่|{MONTHS}|พรุ่งนี้|มะรืน|วันนี้|วันอาทิตย์|{SPECIFIC_WEEKDAYS}"
+          )
+          
+          
+          def _normalise_when(value):
+              spoken = value.strip()
+              if WEEK_WORD_RE.match(spoken):
+                  return spoken
+              if re.match(rf"^{WEEKDAYS}", spoken):
+                  spoken = "วัน" + spoken
+              return spoken
+          
+          
+          def _extract_when(text):
+              """Return only the date/time expression, not the customer's whole sentence."""
+              spoken = _strip_politeness(text)
+              spans = []
+              for pattern in DATE_PATTERNS + TIME_PATTERNS:
+                  for hit in re.finditer(pattern, spoken):
+                      spans.append((hit.start(), hit.end(), pattern in DATE_PATTERNS))
+              if not spans:
+                  return spoken
+              spans.sort()
+              clusters = [[spans[0][0], spans[0][1], spans[0][2]]]
+              for start, end, is_date in spans[1:]:
+                  current = clusters[-1]
+                  if start - current[1] <= 3:
+                      current[1] = max(current[1], end)
+                      current[2] = current[2] or is_date
+                  else:
+                      clusters.append([start, end, is_date])
+              dated = [c for c in clusters if c[2]] or clusters
+              specific = [c for c in dated if SPECIFIC_WHEN_RE.search(spoken[c[0] : c[1]])]
+              best = max(specific or dated, key=lambda c: c[1] - c[0])
+              if best[1] - best[0] > 40:
+                  best[1] = best[0] + 40
+              return _normalise_when(re.sub(r"\s+", " ", spoken[best[0] : best[1]]))
+          
+          
+          def _extract_amount(text):
+              """Return only the amount expression, not the customer's whole sentence."""
+              spoken = _strip_politeness(text)
+              found = re.search(AMOUNT_PATTERN, spoken)
+              if found:
+                  return re.sub(r"\s+", " ", found.group()).strip()
+              number = re.search(THAI_NUM, spoken)
+              return number.group().strip() if number else spoken
+          
+          
+          def _set_pending(state, field, raw):
+              extractor = _extract_amount if field == "paymentAmount" else _extract_when
+              state["pending"] = {"field": field, "raw": _compact(extractor(raw), 120)}
+              return _readback(state, field, state["pending"]["raw"])
+          
+          
+          def _complete(state, outcome_type, message):
+              state["stage"] = "closed"
+              state["outcomeType"] = outcome_type
+              return {
+                  "done": True,
+                  "message": message,
+                  "outcomeType": outcome_type,
+                  "paymentType": state.get("paymentType", "unspecified"),
+                  "paymentDate": state.get("paymentDate", "unspecified"),
+                  "paymentAmount": state.get("paymentAmount", "unspecified"),
+                  "productInterest": state.get("productInterest", "unspecified"),
+                  "preferredTime": state.get("preferredTime") or state.get("callbackTime", "unspecified"),
+                  "topicInterest": state.get("topicInterest", "general_market_update"),
+                  "customerGoal": state.get("customerGoal", "unspecified"),
+                  "experienceLevel": state.get("experienceLevel", "unspecified"),
+                  "outcomeDetail": _detail_with_signal(state, message),
+              }
+          
+          
+          def _detail_with_signal(state, message):
+              detail = state.get("outcomeDetail", message)
+              signal = state.get("primarySignal")
+              if POLICY_V2 and signal and "signal=" not in detail:
+                  detail = f"signal={signal}; {detail}"
+              return detail
+          
+          
+          def _after_confirmation(state):
+              pending = state.pop("pending")
+              field, raw = pending["field"], pending["raw"]
+              state[field] = raw
+              scenario = state["scenario"]
+              if scenario == "bank":
+                  hardship = POLICY_V2 and state.get("primarySignal") == "hardship"
+                  if (field == "paymentDate" and state.get("paymentType") in {"partial", "installment"}
+                          and not state.get("paymentAmount")):
+                      state["stage"] = "payment_amount"
+                      return {"done": False, "message": _ask_for("paymentAmount")}
+                  if field == "paymentAmount" and hardship and not state.get("paymentDate"):
+                      state["stage"] = "paymentDate"
+                      return {"done": False, "message": _ask_for("paymentDate")}
+                  if field in {"paymentDate", "paymentAmount"}:
+                      if hardship:
+                          state["outcomeDetail"] = "signal=hardship; partial payment agreed"
+                          return _complete(state, "partial_payment_agreement",
+                                           "ยืนยันแผนชำระบางส่วนเรียบร้อยแล้ว "
+                                           "จะส่งเรื่องให้ทีมช่วยเหลือตรวจสอบต่อและติดต่อกลับค่ะ")
+                      state["outcomeDetail"] = "confirmed payment commitment"
+                      return _complete(state, "payment_commitment", "ยืนยันแผนการชำระเรียบร้อยแล้ว ขอบคุณค่ะ")
+              if field == "callbackTime":
+                  state["outcomeDetail"] = f"callback {raw}"
+                  return _complete(state, "callback", "ยืนยันเวลาติดต่อกลับเรียบร้อยแล้ว ขอบคุณค่ะ")
+              if scenario == "insurance" and field == "preferredTime":
+                  state["outcomeDetail"] = (
+                      f"need={state.get('productInterest', 'unspecified')}; "
+                      f"customer_priority={state.get('customerGoal', 'unspecified')}; licensed agent appointment {raw}"
+                  )
+                  return _complete(state, "appointment", "ยืนยันเวลานัดหมายกับเจ้าหน้าที่ผู้ได้รับอนุญาตแล้ว ขอบคุณค่ะ")
+              if scenario == "broker" and field == "preferredTime":
+                  topic, experience = _broker_discovery_summary(state)
+                  state["outcomeDetail"] = f"topic={topic}; experience={experience}; licensed consultant appointment {raw}"
+                  return _complete(state, "consultation", "ยืนยันเวลานัดหมายกับผู้แนะนำการลงทุนแล้ว ขอบคุณค่ะ")
+              return {"done": False, "message": "กรุณาระบุข้อมูลต่อค่ะ"}
+          
+          
+          # SUDA does not pause on a plain space between Thai clauses, so enumerated
+          # choices ran together as one word ("เต็มจำนวนชำระบางส่วนหรือแบ่งชำระ"). A comma
+          # produces an audible break and is not spoken aloud. The flow renders prompts as
+          # plain text, so SSML <break> is unavailable.
+          OPTION_PAUSE = ", "
+          
+          
+          def _spoken_options(options):
+              """Join spoken choices so the caller hears a pause between each one."""
+              items = [str(option).strip() for option in options if str(option).strip()]
+              if not items:
+                  return ""
+              if len(items) == 1:
+                  return items[0]
+              return OPTION_PAUSE.join(items[:-1]) + OPTION_PAUSE + "หรือ" + items[-1]
+          
+          
+          # Bank resolves every ask with deterministic Thai matching. Insurance and
+          # securities previously depended on the classifier for the same job, so a weak
+          # model reply produced a statement instead of a question and the call stalled.
+          # These matchers give all three scenarios the same baseline.
+          INSURANCE_NEED_MATCHERS = (
+              ("need_health", re.compile(r"สุขภาพ|ค่ารักษา|โรงพยาบาล|เจ็บป่วย|รักษาพยาบาล|โรคร้าย|ค่าหมอ")),
+              ("need_life", re.compile(r"คุ้มครองชีวิต|ประกันชีวิต|ชีวิต|ครอบครัว|มรดก|คนข้างหลัง")),
+              ("need_savings", re.compile(r"ออม|สะสมทรัพย์|เกษียณ|บำนาญ|ลงทุนระยะยาว|เก็บเงิน")),
+          )
+          BROKER_ACTION_MATCHERS = (
+              ("advice_request", re.compile(r"แนะนำหุ้น|หุ้นตัวไหน|หุ้นอะไร|ควรซื้อ|ควรขาย|ซื้อตัวไหน|ราคาเป้าหมาย")),
+              ("consultation", re.compile(r"นัดคุย|นัดหมาย|ปรึกษา|คุยกับผู้แนะนำ|พบผู้แนะนำ|เจอผู้แนะนำ")),
+              ("seminar", re.compile(r"สัมมนา|รายละเอียด|ข้อมูลเพิ่ม|ส่งมา|อีเมล|ไลน์|สนใจ|เอาครับ|เอาค่ะ")),
+          )
+          BROKER_TOPIC_MATCHERS = (
+              ("starting_investing", re.compile(r"เริ่มลงทุน|มือใหม่|พื้นฐาน|ยังไม่เคยลงทุน|เริ่มศึกษา")),
+              ("portfolio_diversification", re.compile(r"กระจาย|จัดพอร์ต|พอร์ตลงทุน|หลายสินทรัพย์")),
+              ("retirement_planning", re.compile(r"เกษียณ|ระยะยาว|เงินหลังเกษียณ")),
+              ("market_education", re.compile(r"ตลาด|เศรษฐกิจ|ปัจจัยตลาด|ความผันผวน|สัมมนา")),
+          )
+          BROKER_EXPERIENCE_MATCHERS = (
+              ("experienced", re.compile(r"ลงทุนมานาน|หลายปี|ประสบการณ์|ลงทุนประจำ")),
+              ("new_investor", re.compile(r"ยังไม่เคย|มือใหม่|เพิ่งเริ่ม|เริ่มศึกษา|ไม่มีประสบการณ์")),
+              ("some_experience", re.compile(r"เคยลงทุน|มีพอร์ต|ลงทุนอยู่|เคยซื้อ|เคยขาย")),
+          )
+          # A refusal must never be read as interest in the seminar.
+          BROKER_DECLINE_RE = re.compile(r"ไม่สนใจ|ไม่เอา|ไม่ต้อง|ไม่ว่าง|ไม่สะดวก|ยังไม่")
+          
+          
+          def _match_first(matchers, text):
+              compact = _despace(_compact(text, 200))
+              for name, pattern in matchers:
+                  if pattern.search(compact):
+                      return name
+              return None
+          
+          
+          def _insurance_need(text):
+              return _match_first(INSURANCE_NEED_MATCHERS, text)
+          
+          
+          def _broker_action(text):
+              if BROKER_DECLINE_RE.search(_despace(_compact(text, 200))):
+                  return None
+              return _match_first(BROKER_ACTION_MATCHERS, text)
+          
+          
+          def _broker_topic(text):
+              return _match_first(BROKER_TOPIC_MATCHERS, text)
+          
+          
+          def _broker_experience(text):
+              return _match_first(BROKER_EXPERIENCE_MATCHERS, text)
+          
+          
+          # A caller asking us to repeat is not a request for a human.
+          REPEAT_RE = re.compile(
+              r"ขอใหม่|อีกครั้ง|อีกรอบ|พูดอีก|ขอซ้ำ|ไม่ได้ยิน|ยังไม่ได้ยิน|เสียงหาย|เสียงขาด|"
+              r"เสียงไม่ชัด|ฟังไม่ทัน|พูดช้า|ช้าลง"
+          )
+          
+          BANK_PAYMENT_CHOICES = ("ชำระเต็มจำนวน", "ชำระบางส่วน", "แบ่งชำระ")
+          BANK_HARDSHIP_CHOICES = ("ชำระบางส่วนก่อน", "ขอเลื่อนการชำระออกไป")
+          INSURANCE_NEED_CHOICES = ("สุขภาพ", "ชีวิต", "การออม")
+          BROKER_ACTION_CHOICES = ("สนใจรับรายละเอียดสัมมนา", "นัดคุยกับผู้แนะนำการลงทุน")
+          BROKER_TOPIC_CHOICES = ("พื้นฐานการลงทุน", "การกระจายพอร์ต", "การวางแผนเกษียณ", "ความรู้เรื่องตลาด")
+          
+          INSURANCE_DISCOVERY = {
+              "health_rider": (
+                  "ความคุ้มครองสุขภาพอาจช่วยวางแผนค่าใช้จ่ายที่เป็นไปตามเงื่อนไขกรมธรรม์",
+                  "สิ่งที่อยากให้เจ้าหน้าที่ช่วยดูเป็นหลักคือค่ารักษา, โรคร้ายแรง, หรือความคุ้มครองที่มีอยู่คะ",
+              ),
+              "life_topup": (
+                  "ความคุ้มครองชีวิตอาจช่วยวางแผนเงินให้ผู้รับประโยชน์ตามเงื่อนไขกรมธรรม์",
+                  "สิ่งที่ให้ความสำคัญเป็นหลักคือครอบครัว, ภาระหนี้สิน, หรือเงินสำรองคะ",
+              ),
+              "savings_insurance": (
+                  "ประกันเพื่อการออมรวมความคุ้มครองกับการออมตามเงื่อนไขกรมธรรม์",
+                  "เป้าหมายหลักคือเงินสำรอง, การเกษียณ, หรือวินัยการออมคะ",
+              ),
+          }
+          BROKER_TOPIC_LABELS = {
+              "starting_investing": "พื้นฐานการลงทุน",
+              "portfolio_diversification": "การกระจายพอร์ต",
+              "retirement_planning": "การวางแผนเกษียณ",
+              "market_education": "ความรู้เรื่องตลาด",
+              "customer_stated_topic": "หัวข้อที่แจ้งไว้",
+          }
+          BROKER_APPROVED_FACTS = {
+              "starting_investing": "การเริ่มลงทุนควรพิจารณาเป้าหมาย, ระยะเวลา, และความเสี่ยงที่ยอมรับได้ก่อนค่ะ",
+              "portfolio_diversification": "การกระจายการลงทุนช่วยลดการพึ่งพาสินทรัพย์เดียว แต่ไม่ป้องกันการขาดทุนทั้งหมดค่ะ",
+              "retirement_planning": "การลงทุนเพื่อเกษียณควรพิจารณาระยะเวลาและความผันผวน โดยผู้แนะนำการลงทุนต้องประเมินความเหมาะสมค่ะ",
+              "market_education": "ข้อมูลสัมมนาอธิบายปัจจัยตลาดเพื่อการศึกษา ไม่ใช่การคาดการณ์ผลตอบแทนค่ะ",
+          }
+          DISCOVERY_FILLER_RE = re.compile(r"^(?:อือ|เอ่อ|อ่า|อืม|ครับ|ค่ะ|คะ|ไม่รู้|ยังไม่แน่ใจ)$")
+          
+          
+          def _customer_words(text, limit=100):
+              words = _strip_politeness(_compact(text, limit)).strip(" .,!?ๆ")
+              return "" if not words or DISCOVERY_FILLER_RE.fullmatch(_despace(words)) else words
+          
+          
+          def _insurance_discovery_prompt(product_interest):
+              fact, question = INSURANCE_DISCOVERY[product_interest]
+              return f"{fact}ค่ะ {question}"
+          
+          
+          def _broker_topic_prompt(topic, customer_topic=""):
+              fact = BROKER_APPROVED_FACTS.get(topic)
+              if fact:
+                  return f"{fact} คุณเคยลงทุนมาก่อน, หรือกำลังเริ่มศึกษาคะ"
+              return f"รับทราบว่าคุณสนใจเรื่อง{customer_topic}ค่ะ คุณเคยลงทุนมาก่อน, หรือกำลังเริ่มศึกษาคะ"
+          
+          
+          def _broker_discovery_summary(state):
+              topic = state.get("customerTopic") or BROKER_TOPIC_LABELS.get(state.get("topicInterest"), "การลงทุน")
+              experience = state.get("customerExperience") or {
+                  "new_investor": "กำลังเริ่มศึกษา",
+                  "some_experience": "มีประสบการณ์ลงทุนบ้าง",
+                  "experienced": "มีประสบการณ์ลงทุน",
+              }.get(state.get("experienceLevel"), "ยังไม่ได้ระบุประสบการณ์")
+              return topic, experience
+          
+          
+          def _detect_signal(text):
+              """Return the highest-priority customer signal present in the turn."""
+              compact = _despace(_compact(text, 240))
+              for name, pattern in SIGNAL_PATTERNS:
+                  if pattern.search(compact):
+                      return name
+              return None
+          
+          
+          def _apply_signal(state, signal, scenario):
+              """Handle a shared signal before the ordinary slot-filling flow.
+          
+              Returns None when the scenario handler should process the turn instead.
+              """
+              state["primarySignal"] = signal
+              if signal == "do_not_contact":
+                  state["outcomeDetail"] = "signal=do_not_contact; contact ban requested"
+                  return _complete(state, "do_not_contact",
+                                   "รับทราบค่ะ จะบันทึกคำขอไม่ให้ติดต่ออีกและขอยุติการโทรค่ะ")
+              if signal == "vulnerability":
+                  state["outcomeDetail"] = "signal=vulnerability; specialist review required"
+                  return _complete(state, "vulnerability_referral",
+                                   "รับทราบค่ะ ขอส่งเรื่องให้เจ้าหน้าที่ดูแลเป็นกรณีพิเศษและติดต่อกลับค่ะ")
+              if signal == "complaint":
+                  state["outcomeDetail"] = "signal=complaint; complaint logged"
+                  return _complete(state, "complaint_logged",
+                                   "ขออภัยค่ะ จะบันทึกข้อร้องเรียนและให้เจ้าหน้าที่ติดต่อกลับดูแลค่ะ")
+              # hardship
+              if scenario == "bank":
+                  if not state.get("identityConfirmed"):
+                      return None
+                  if state.get("stage") == "hardship_options":
+                      return None
+                  state["stage"] = "hardship_options"
+                  return {"done": False,
+                          "message": "รับทราบค่ะ ขอบคุณที่แจ้งให้ทราบ "
+                                     f"ขณะนี้สะดวก{_spoken_options(BANK_HARDSHIP_CHOICES)}คะ"}
+              if scenario == "insurance":
+                  state["outcomeDetail"] = "signal=hardship; affordability review requested"
+                  return _complete(state, "affordability_review",
+                                   "รับทราบค่ะ จะให้เจ้าหน้าที่ผู้ได้รับอนุญาตทบทวนความคุ้มครองและค่าเบี้ยที่เหมาะสมค่ะ")
+              state["outcomeDetail"] = "signal=hardship; licensed representative review required"
+              return _complete(state, "licensed_rep_referral",
+                               "รับทราบค่ะ เรื่องนี้ต้องให้ผู้แนะนำการลงทุนที่ได้รับอนุญาตดูแลค่ะ")
+          
+          
+          DEFER_RE = re.compile(r"ขอผ่อนผัน|พักชำระ|พักหนี้|เลื่อน|ไม่ไหว|ไม่ได้เลย|ไม่มีจริง|ยังไม่ได้|ไม่มีเลย")
+          PARTIAL_RE = re.compile(r"บางส่วน|บ้าง|เท่าที่|พอจ่าย|จ่ายได้|ผ่อน|แบ่ง")
+          
+          
+          def _handle_hardship_options(state, transcript):
+              """Bank hardship branch: capture a partial offer or refer for assistance."""
+              compact = _despace(_compact(transcript, 200))
+              if DEFER_RE.search(compact) and not _looks_amount(compact):
+                  state["outcomeDetail"] = "signal=hardship; payment assistance review requested"
+                  return _complete(state, "payment_assistance_referral",
+                                   "รับทราบค่ะ จะส่งเรื่องให้ทีมช่วยเหลือด้านการชำระตรวจสอบแนวทางผ่อนผัน "
+                                   "แล้วติดต่อกลับเพื่อแจ้งผลค่ะ")
+              if PARTIAL_RE.search(compact) or _looks_amount(compact):
+                  state["paymentType"] = "partial"
+                  if _looks_amount(compact):
+                      return {"done": False, "message": _set_pending(state, "paymentAmount", compact)}
+                  state["stage"] = "payment_amount"
+                  return {"done": False, "message": _ask_for("paymentAmount")}
+              return {"done": False,
+                      "message": f"สะดวก{_spoken_options(BANK_HARDSHIP_CHOICES)}คะ"}
+          
+          
+          def _handle_pending(state, transcript):
+              pending = state.get("pending")
+              if not pending:
+                  return None
+              if _is_yes(transcript):
+                  return _after_confirmation(state)
+              if _is_no(transcript):
+                  field = pending["field"]
+                  state.pop("pending", None)
+                  state["stage"] = field
+                  return {"done": False, "message": _ask_for(field)}
+              field = pending["field"]
+              # A caller who restates a different date or amount is correcting the read-back,
+              # not failing to answer it. Re-capture rather than repeating the same sentence.
+              if field == "paymentAmount":
+                  if _looks_amount(transcript):
+                      candidate = _compact(_extract_amount(transcript), 120)
+                      if candidate and candidate != pending["raw"]:
+                          return {"done": False, "message": _set_pending(state, field, transcript)}
+              elif _looks_datetime(transcript):
+                  candidate = _compact(_extract_when(transcript), 120)
+                  if candidate and candidate != pending["raw"]:
+                      return {"done": False, "message": _set_pending(state, field, transcript)}
+              return {"done": False, "message": _readback(state, field, pending["raw"])}
+          
+          
+          def _common_intent(state, classified):
+              intent = classified["intent"]
+              if intent == "declined":
+                  return _complete(state, "declined", "รับทราบค่ะ ขอบคุณที่สละเวลาค่ะ")
+              if intent == "human":
+                  return _complete(state, "human_transfer", "รับทราบค่ะ จะให้เจ้าหน้าที่ติดต่อกลับค่ะ")
+              if intent == "callback":
+                  raw = classified.get("rawValue", "")
+                  if raw and _looks_datetime(raw):
+                      return {"done": False, "message": _set_pending(state, "callbackTime", raw)}
+                  state["stage"] = "callbackTime"
+                  return {"done": False, "message": _ask_for("callbackTime")}
+              return None
+          
+          
+          def _handle_bank(state, transcript, classified, attributes):
+              stage = state["stage"]
+              if stage == "verify_identity":
+                  if _identity_no(transcript):
+                      return _complete(state, "unavailable", "ขออภัยที่รบกวนค่ะ ขอบคุณค่ะ")
+                  if _identity_yes(transcript):
+                      state["identityConfirmed"] = True
+                      state["stage"] = "payment_type"
+                      amount_spoken = _thai_baht_words(attributes.get("amount"))
+                      due_date = _compact(attributes.get("dueDate") or "วันที่แจ้ง", 80)
+                      customer_name = _compact(attributes.get("customerName") or "", 80)
+                      if customer_name.startswith("คุณ"):
+                          customer_address = customer_name
+                      else:
+                          customer_address = f"คุณ{customer_name}" if customer_name else "คุณลูกค้า"
+                      return {"done": False, "message": f"ขอบคุณที่ยืนยันตัวนะคะ {customer_address} ขณะนี้มียอดที่ต้องชำระ {amount_spoken} ครบกำหนด {due_date} ค่ะ สะดวก{_spoken_options(BANK_PAYMENT_CHOICES)}คะ"}
+                  return {"done": False, "message": "ขอเรียนยืนยันว่ากำลังเรียนสายเจ้าของชื่อที่แจ้งไว้หรือไม่คะ"}
+              if POLICY_V2 and stage == "hardship_options":
+                  return _handle_hardship_options(state, transcript)
+              common = _common_intent(state, classified)
+              if common:
+                  return common
+              if classified["intent"] == "dispute":
+                  return _complete(state, "dispute", "รับทราบข้อโต้แย้งค่ะ จะให้เจ้าหน้าที่ตรวจสอบข้อมูลต่อค่ะ")
+              if stage == "payment_type":
+                  value = _payment_type(transcript)
+                  if not value:
+                      return {"done": False, "message": f"สะดวก{_spoken_options(BANK_PAYMENT_CHOICES)}คะ"}
+                  state["paymentType"] = value
+                  state["stage"] = "paymentDate"
+                  return {"done": False, "message": _ask_for("paymentDate")}
+              if stage in {"payment_date", "paymentDate"}:
+                  if _looks_datetime(transcript):
+                      return {"done": False, "message": _set_pending(state, "paymentDate", transcript)}
+                  return {"done": False, "message": _ask_for("paymentDate")}
+              if stage in {"payment_amount", "paymentAmount"}:
+                  if _looks_amount(transcript):
+                      return {"done": False, "message": _set_pending(state, "paymentAmount", transcript)}
+                  return {"done": False, "message": _ask_for("paymentAmount")}
+              if stage in {"callback_time", "callbackTime"}:
+                  if _looks_datetime(transcript):
+                      return {"done": False, "message": _set_pending(state, "callbackTime", transcript)}
+                  return {"done": False, "message": _ask_for("callbackTime")}
+              return {"done": False, "message": "กรุณาตอบคำถามสั้น ๆ อีกครั้งค่ะ"}
+          
+          
+          def _handle_insurance(state, transcript, classified):
+              common = _common_intent(state, classified)
+              if common:
+                  return common
+              if classified["intent"] == "product_question":
+                  return _complete(
+                      state,
+                      "product_question",
+                      "รายละเอียดผลิตภัณฑ์และความเหมาะสมต้องให้เจ้าหน้าที่ผู้ได้รับอนุญาตดูแลค่ะ",
+                  )
+              stage = state["stage"]
+              if stage == "qualify_need":
+                  mapping = {
+                      "need_health": "health_rider",
+                      "need_life": "life_topup",
+                      "need_savings": "savings_insurance",
+                  }
+                  need = _insurance_need(transcript) or (
+                      classified["intent"] if classified["intent"] in mapping else None)
+                  if need in mapping:
+                      state["productInterest"] = mapping[need]
+                      state["stage"] = "discover_priority"
+                      return {"done": False, "message": _insurance_discovery_prompt(mapping[need])}
+                  return {"done": False, "message": f"ต้องการความคุ้มครองด้าน{_spoken_options(INSURANCE_NEED_CHOICES)}คะ"}
+              if stage == "discover_priority":
+                  priority = _customer_words(transcript)
+                  if not priority:
+                      return {"done": False, "message": INSURANCE_DISCOVERY[state["productInterest"]][1]}
+                  state["customerGoal"] = priority
+                  state["stage"] = "offer_handoff"
+                  return {
+                      "done": False,
+                      "message": (
+                          f"รับทราบค่ะ ประเด็นสำคัญคือ{priority} "
+                          "ต้องการให้เจ้าหน้าที่ผู้ได้รับอนุญาตตรวจสอบทางเลือกและเงื่อนไขจริงให้ไหมคะ"
+                      ),
+                  }
+              if stage == "offer_handoff":
+                  if _is_no(transcript) or classified["intent"] == "declined":
+                      return _complete(state, "declined", "รับทราบค่ะ ขอบคุณที่ให้ข้อมูลและขอบคุณที่สละเวลาค่ะ")
+                  if _looks_datetime(transcript):
+                      return {"done": False, "message": _set_pending(state, "preferredTime", transcript)}
+                  if _is_yes(transcript) or classified["intent"] == "appointment":
+                      state["stage"] = "preferredTime"
+                      return {"done": False, "message": "สะดวกให้เจ้าหน้าที่ผู้ได้รับอนุญาตติดต่อวันใดและเวลาใดคะ"}
+                  return {"done": False, "message": "ต้องการให้เจ้าหน้าที่ผู้ได้รับอนุญาตติดต่อเพื่อดูรายละเอียดต่อไหมคะ"}
+              if stage in {"preferred_time", "preferredTime", "appointment_time"}:
+                  raw = classified.get("rawValue") if classified["intent"] == "appointment" else transcript
+                  if _looks_datetime(raw):
+                      return {"done": False, "message": _set_pending(state, "preferredTime", raw)}
+                  return {"done": False, "message": _ask_for("preferredTime")}
+              if stage in {"callback_time", "callbackTime"}:
+                  if _looks_datetime(transcript):
+                      return {"done": False, "message": _set_pending(state, "callbackTime", transcript)}
+                  return {"done": False, "message": _ask_for("callbackTime")}
+              return {"done": False, "message": "กรุณาตอบคำถามสั้น ๆ อีกครั้งค่ะ"}
+          
+          
+          def _handle_broker(state, transcript, classified):
+              common = _common_intent(state, classified)
+              if common:
+                  return common
+              stage = state["stage"]
+              detected_action = _broker_action(transcript)
+              if detected_action == "advice_request" or classified["intent"] == "advice_request":
+                  return _complete(state, "advice_request", "คำแนะนำเฉพาะหลักทรัพย์ต้องให้ผู้แนะนำการลงทุนดูแลค่ะ")
+              if stage == "choose_action":
+                  action = detected_action
+                  if action is None and _is_yes(transcript):
+                      action = "seminar"
+                  if action is None and classified["intent"] in {"seminar", "consultation"}:
+                      action = classified["intent"]
+                  if action in {"seminar", "consultation"}:
+                      state["selectedAction"] = action
+                      topic = _broker_topic(transcript)
+                      if topic:
+                          state["topicInterest"] = topic
+                          state["stage"] = "discover_experience"
+                          return {"done": False, "message": _broker_topic_prompt(topic)}
+                      state["stage"] = "discover_topic"
+                      return {
+                          "done": False,
+                          "message": f"สนใจข้อมูลด้าน{_spoken_options(BROKER_TOPIC_CHOICES)}คะ",
+                      }
+                  return {"done": False, "message": f"{_spoken_options(BROKER_ACTION_CHOICES)}คะ"}
+              if stage == "discover_topic":
+                  topic = _broker_topic(transcript)
+                  customer_topic = ""
+                  if not topic:
+                      customer_topic = _customer_words(transcript)
+                      if not customer_topic:
+                          return {"done": False, "message": f"สนใจข้อมูลด้าน{_spoken_options(BROKER_TOPIC_CHOICES)}คะ"}
+                      topic = "customer_stated_topic"
+                      state["customerTopic"] = customer_topic
+                  state["topicInterest"] = topic
+                  state["stage"] = "discover_experience"
+                  return {"done": False, "message": _broker_topic_prompt(topic, customer_topic)}
+              if stage == "discover_experience":
+                  experience = _broker_experience(transcript)
+                  customer_experience = ""
+                  if not experience:
+                      customer_experience = _customer_words(transcript)
+                      if not customer_experience:
+                          return {"done": False, "message": "คุณเคยลงทุนมาก่อน, หรือกำลังเริ่มศึกษาคะ"}
+                      experience = "customer_stated"
+                      state["customerExperience"] = customer_experience
+                  state["experienceLevel"] = experience
+                  state["stage"] = "offer_next_step"
+                  topic_label, experience_label = _broker_discovery_summary(state)
+                  return {
+                      "done": False,
+                      "message": (
+                          f"รับทราบค่ะ คุณสนใจ{topic_label}และ{experience_label} "
+                          f"สะดวก{_spoken_options(BROKER_ACTION_CHOICES)}คะ"
+                      ),
+                  }
+              if stage == "offer_next_step":
+                  action = detected_action
+                  if action is None and _is_yes(transcript):
+                      action = state.get("selectedAction")
+                  if _is_no(transcript) or classified["intent"] == "declined":
+                      return _complete(state, "declined", "รับทราบค่ะ ขอบคุณที่ให้ข้อมูลและขอบคุณที่สละเวลาค่ะ")
+                  if action == "seminar" or classified["intent"] == "seminar":
+                      topic, experience = _broker_discovery_summary(state)
+                      state["outcomeDetail"] = f"topic={topic}; experience={experience}; tailored seminar details requested"
+                      return _complete(
+                          state,
+                          "seminar_details",
+                          f"รับทราบค่ะ ระบบจะส่งรายละเอียดสัมมนาเรื่อง{topic}เพื่อศึกษา โดยไม่ใช่คำแนะนำการลงทุนค่ะ",
+                      )
+                  if action == "consultation" or classified["intent"] == "consultation":
+                      state["selectedAction"] = "consultation"
+                      state["stage"] = "preferredTime"
+                      return {"done": False, "message": "สะดวกนัดคุยกับผู้แนะนำการลงทุนวันใดและเวลาใดคะ"}
+                  return {"done": False, "message": f"สะดวก{_spoken_options(BROKER_ACTION_CHOICES)}คะ"}
+              if stage in {"preferred_time", "preferredTime", "consultation_time"}:
+                  raw = classified.get("rawValue") if classified["intent"] == "consultation" else transcript
+                  if _looks_datetime(raw):
+                      return {"done": False, "message": _set_pending(state, "preferredTime", raw)}
+                  return {"done": False, "message": _ask_for("preferredTime")}
+              if stage in {"callback_time", "callbackTime"}:
+                  if _looks_datetime(transcript):
+                      return {"done": False, "message": _set_pending(state, "callbackTime", transcript)}
+                  return {"done": False, "message": _ask_for("callbackTime")}
+              return {"done": False, "message": "กรุณาตอบคำถามสั้น ๆ อีกครั้งค่ะ"}
+          
+          
+          def _needs_model(scenario, state, transcript):
+              stage = state.get("stage", "")
+              if POLICY_V2 and stage == "hardship_options":
+                  return False
+              if scenario == "bank":
+                  if stage == "verify_identity":
+                      return False
+                  if stage == "payment_type" and _payment_type(transcript):
+                      return False
+                  if stage in {"payment_date", "paymentDate"} and _looks_datetime(transcript):
+                      return False
+                  if stage in {"payment_amount", "paymentAmount"} and _looks_amount(transcript):
+                      return False
+                  if stage in {"callback_time", "callbackTime"} and _looks_datetime(transcript):
+                      return False
+              if scenario in {"insurance", "broker"}:
+                  if stage in {"preferred_time", "preferredTime", "appointment_time", "consultation_time"} and _looks_datetime(transcript):
+                      return False
+                  if stage in {"callback_time", "callbackTime"} and _looks_datetime(transcript):
+                      return False
+              return True
+          
+          
+          def _lex_response(event, attributes):
+              intent = event.get("sessionState", {}).get("intent", {}) or {}
+              intent_name = intent.get("name") or "FallbackIntent"
+              return {
+                  "sessionState": {
+                      "sessionAttributes": attributes,
+                      "dialogAction": {"type": "Close"},
+                      "intent": {"name": intent_name, "state": "Fulfilled"},
+                  },
+                  "messages": [{"contentType": "CustomPayload", "content": '{"handled":true}'}],
+              }
+          
+          
+          def handler(event, context):
+              attributes = dict(event.get("sessionState", {}).get("sessionAttributes") or {})
+              scenario = str(attributes.get("scenario", "")).lower()
+              if scenario not in SCENARIOS:
+                  scenario = "insurance"
+              transcript = _compact(event.get("inputTranscript"), 240)
+              state = _load_state(attributes, scenario)
+              state["turn"] += 1
+              pending_result = _handle_pending(state, transcript)
+              classified = {"intent": "unknown", "message": "", "rawValue": "", "model": "deterministic", "latencyMs": 0}
+              repeat_requested = bool(
+                  POLICY_V2 and state.get("lastMessage") and REPEAT_RE.search(_despace(transcript))
+              )
+              signal_result = None
+              if POLICY_V2 and pending_result is None and not repeat_requested:
+                  detected = _detect_signal(transcript)
+                  if detected:
+                      signal_result = _apply_signal(state, detected, scenario)
+              if repeat_requested:
+                  result = {"done": False, "message": state["lastMessage"]}
+              elif pending_result is not None:
+                  result = pending_result
+              elif signal_result is not None:
+                  result = signal_result
+              elif state["turn"] > MAX_TURNS:
+                  result = _complete(state, "callback", "เพื่อความสะดวก จะให้เจ้าหน้าที่ติดต่อกลับภายหลังค่ะ")
+              elif scenario == "bank" and state["stage"] == "verify_identity":
+                  result = _handle_bank(state, transcript, classified, attributes)
+              elif not _needs_model(scenario, state, transcript):
+                  if scenario == "bank":
+                      result = _handle_bank(state, transcript, classified, attributes)
+                  elif scenario == "insurance":
+                      result = _handle_insurance(state, transcript, classified)
+                  else:
+                      result = _handle_broker(state, transcript, classified)
+              else:
+                  classified = _classify(scenario, state, transcript, _facts(attributes, state))
+                  if scenario == "bank":
+                      result = _handle_bank(state, transcript, classified, attributes)
+                  elif scenario == "insurance":
+                      result = _handle_insurance(state, transcript, classified)
+                  else:
+                      result = _handle_broker(state, transcript, classified)
+              if repeat_requested:
+                  state["noProgress"] = 0
+              elif POLICY_V2 and not result.get("done"):
+                  message = _compact(result.get("message"), 300)
+                  stage = state.get("stage")
+                  if message and message == state.get("lastMessage") and stage == state.get("lastStage"):
+                      state["noProgress"] = int(state.get("noProgress", 0)) + 1
+                  else:
+                      state["noProgress"] = 0
+                      state["lastMessage"] = message
+                      state["lastStage"] = stage
+                  if state["noProgress"] >= MAX_REPEATS:
+                      state["outcomeDetail"] = "unresolved after repeated prompts"
+                      result = _complete(state, "unresolved_needs_human",
+                                         "ขออภัยค่ะ ขอส่งเรื่องให้เจ้าหน้าที่ติดต่อกลับเพื่อดูแลต่อค่ะ")
+              state["lastModel"] = classified.get("model", "deterministic")
+              state["lastLatencyMs"] = classified.get("latencyMs", 0)
+              output = {
+                  **attributes,
+                  "mantleState": json.dumps(state, ensure_ascii=False, separators=(",", ":")),
+                  "nextPrompt": _compact(result["message"], 300),
+                  "done": "true" if result.get("done") else "false",
+                  "modelUsed": str(state["lastModel"]),
+                  "modelLatencyMs": str(state["lastLatencyMs"]),
+                  "outcomeType": result.get("outcomeType", "pending"),
+                  "outcomeDetail": result.get("outcomeDetail", ""),
+                  "paymentType": result.get("paymentType", "unspecified"),
+                  "paymentDate": result.get("paymentDate", "unspecified"),
+                  "paymentAmount": result.get("paymentAmount", "unspecified"),
+                  "productInterest": result.get("productInterest", "unspecified"),
+                  "preferredTime": result.get("preferredTime", "unspecified"),
+                  "topicInterest": result.get("topicInterest", "general_market_update"),
+                  "customerGoal": result.get("customerGoal", state.get("customerGoal", "unspecified")),
+                  "experienceLevel": result.get("experienceLevel", state.get("experienceLevel", "unspecified")),
+                  "primarySignal": state.get("primarySignal", "none"),
+                  "policyVersion": "v2" if POLICY_V2 else "v1",
+              }
+              return _lex_response(event, {key: str(value) for key, value in output.items()})
+
+  MantleLexRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub fsi-mantle-lex-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lexv2.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ThaiSpeech
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: polly:SynthesizeSpeech
+                Resource: '*'
+
+  MantleLexBot:
+    Type: AWS::Lex::Bot
+    Properties:
+      Name: fsi-mantle-dialogue-bot
+      RoleArn: !GetAtt MantleLexRole.Arn
+      DataPrivacy: { ChildDirected: false }
+      IdleSessionTTLInSeconds: 300
+      AutoBuildBotLocales: true
+      BotLocales:
+        - LocaleId: th_TH
+          NluConfidenceThreshold: 0.4
+          GenerativeAISettings:
+            RuntimeSettings:
+              NluImprovementSpecification:
+                Enabled: true
+                AssistedNluMode: Primary
+          Intents:
+            - Name: MantleDialogue
+              Description: Catch-all utterance that invokes the isolated Mantle dialogue Lambda
+              SampleUtterances:
+                - Utterance: เริ่มสนทนา
+                - Utterance: ต้องการข้อมูล
+              FulfillmentCodeHook:
+                Enabled: true
+                IsActive: true
+            - Name: FallbackIntent
+              ParentIntentSignature: AMAZON.FallbackIntent
+              FulfillmentCodeHook:
+                Enabled: true
+                IsActive: true
+
+  MantleLexVersionV2:
+    Type: AWS::Lex::BotVersion
+    Properties:
+      BotId: !Ref MantleLexBot
+      Description: Mantle dialogue v2 with Primary assisted NLU
+      BotVersionLocaleSpecification:
+        - LocaleId: th_TH
+          BotVersionLocaleDetails: { SourceBotVersion: DRAFT }
+
+  MantleLexAlias:
+    Type: AWS::Lex::BotAlias
+    Properties:
+      BotAliasName: live
+      BotId: !Ref MantleLexBot
+      BotVersion: !GetAtt MantleLexVersionV2.BotVersion
+      BotAliasLocaleSettings:
+        - LocaleId: th_TH
+          BotAliasLocaleSetting:
+            Enabled: true
+            CodeHookSpecification:
+              LambdaCodeHook:
+                CodeHookInterfaceVersion: '1.0'
+                LambdaArn: !GetAtt MantleDialogueFunction.Arn
+
+  MantleLexPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MantleDialogueFunction
+      Action: lambda:InvokeFunction
+      Principal: lexv2.amazonaws.com
+      SourceArn: !GetAtt MantleLexAlias.Arn
+
+  MantleLexIntegration:
+    Type: AWS::Connect::IntegrationAssociation
+    Properties:
+      InstanceId: !Ref ConnectInstanceArn
+      IntegrationType: LEX_BOT
+      IntegrationArn: !GetAtt MantleLexAlias.Arn
+
+  MantleContactFlow:
+    Type: AWS::Connect::ContactFlow
+    DependsOn: MantleLexIntegration
+    Properties:
+      Name: FSI Mantle Experimental Flow
+      Description: Feature-flagged Thai Luna/Terra dialogue path; managed Q remains default
+      InstanceArn: !Ref ConnectInstanceArn
+      Type: CONTACT_FLOW
+      Content: !Sub |
+        {"Version":"2019-10-30","StartAction":"logging","Metadata":{"entryPointPosition":{"x":20,"y":20},"snapToGrid":false,"name":"FSI Mantle Experimental Flow","description":"Feature-flagged Thai Luna/Terra dialogue path","type":"contactFlow","status":"published","ActionMetadata":{"contact-lens-analytics":{"position":{"x":120,"y":230}}}},"Actions":[{"Identifier":"logging","Type":"UpdateFlowLoggingBehavior","Parameters":{"FlowLoggingBehavior":"Enabled"},"Transitions":{"NextAction":"contact-lens-analytics","Errors":[],"Conditions":[]}},{"Identifier":"contact-lens-analytics","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"},"AnalyticsBehavior":{"Enabled":"True","AnalyticsLanguage":"th-TH","ChannelConfiguration":{"Voice":{"AnalyticsModes":["PostContact","AutomatedInteraction"]}}}},"Transitions":{"NextAction":"set-voice","Errors":[],"Conditions":[]}},{"Identifier":"set-voice","Type":"UpdateContactTextToSpeechVoice","Parameters":{"TextToSpeechVoice":"SUDA","TextToSpeechEngine":"connect:agentic"},"Transitions":{"NextAction":"set-language","Errors":[{"NextAction":"set-language","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"set-language","Type":"UpdateContactData","Parameters":{"LanguageCode":"th-TH"},"Transitions":{"NextAction":"scenario-branch","Errors":[{"NextAction":"scenario-branch","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"scenario-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Attributes.scenario"},"Transitions":{"NextAction":"intro-bank","Errors":[{"NextAction":"intro-bank","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"intro-bank","Condition":{"Operator":"Equals","Operands":["bank"]}},{"NextAction":"intro-insurance","Condition":{"Operator":"Equals","Operands":["insurance"]}},{"NextAction":"intro-broker","Condition":{"Operator":"Equals","Operands":["broker"]}}]}},{"Identifier":"intro-bank","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันโทรมาจากฝ่ายบริการลูกค้าของธนาคารนะคะ"},"Transitions":{"NextAction":"input-bank","Errors":[{"NextAction":"input-bank","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"intro-insurance","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของบริษัทประกันค่ะ โทรมาเพื่อนำเสนอข้อมูลแผนความคุ้มครอง การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการค่ะ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต หากสนใจจะให้เจ้าหน้าที่ผู้ได้รับอนุญาตติดต่อกลับค่ะ"},"Transitions":{"NextAction":"input-insurance","Errors":[{"NextAction":"input-insurance","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"intro-broker","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของบริษัทหลักทรัพย์ค่ะ โทรมาแจ้งข้อมูลสัมมนาการลงทุน ไม่ใช่การให้คำแนะนำการลงทุนค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ และผู้แนะนำการลงทุนที่ได้รับอนุญาตจะเป็นผู้ดูแลรายละเอียดค่ะ"},"Transitions":{"NextAction":"input-broker","Errors":[{"NextAction":"input-broker","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"input-bank","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"ไม่ทราบว่ากำลังเรียนสายคุณ $.Attributes.customerName อยู่หรือเปล่าคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"input-insurance","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"คุณ $.Attributes.customerName สะดวกคุยสักครู่ไหมคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"input-broker","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"คุณ $.Attributes.customerName สนใจรับรายละเอียดไหมคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"input-resume","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"$.Lex.SessionAttributes.mantleState","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"route-result","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.done"},"Transitions":{"NextAction":"input-resume","Errors":[{"NextAction":"input-resume","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"closing-message","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"closing-message","Type":"MessageParticipant","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt"},"Transitions":{"NextAction":"record-outcome","Errors":[{"NextAction":"record-outcome","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"record-outcome","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunctionArn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","scenario":"$.Attributes.scenario","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail","paymentType":"$.Lex.SessionAttributes.paymentType","paymentDate":"$.Lex.SessionAttributes.paymentDate","paymentAmount":"$.Lex.SessionAttributes.paymentAmount","productInterest":"$.Lex.SessionAttributes.productInterest","preferredTime":"$.Lex.SessionAttributes.preferredTime","topicInterest":"$.Lex.SessionAttributes.topicInterest"}},"Transitions":{"NextAction":"disconnect","Errors":[{"NextAction":"disconnect","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"error-message","Type":"MessageParticipant","Parameters":{"Text":"ขออภัยค่ะ ระบบทดลองยังไม่สามารถดำเนินการต่อได้ กรุณาลองใหม่ภายหลังค่ะ"},"Transitions":{"NextAction":"disconnect","Errors":[{"NextAction":"disconnect","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"disconnect","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}
+
+Outputs:
+  MantleFunctionName:
+    Value: !Ref MantleDialogueFunction
+  MantleLexBotId:
+    Value: !Ref MantleLexBot
+  MantleLexAliasArn:
+    Value: !GetAtt MantleLexAlias.Arn
+  MantleContactFlowArn:
+    Value: !GetAtt MantleContactFlow.ContactFlowArn
+  MantleContactFlowId:
+    Value: !Select [ 3, !Split [ '/', !GetAtt MantleContactFlow.ContactFlowArn ] ]

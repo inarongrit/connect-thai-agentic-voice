@@ -1,0 +1,523 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "logging",
+  "Metadata": {
+    "entryPointPosition": {
+      "x": 20,
+      "y": 20
+    },
+    "snapToGrid": false,
+    "name": "FSI Mantle Experimental Flow",
+    "description": "Feature-flagged Thai Luna/Terra dialogue path",
+    "type": "contactFlow",
+    "status": "published",
+    "ActionMetadata": {
+      "contact-lens-analytics": {
+        "position": {
+          "x": 120,
+          "y": 230
+        }
+      }
+    }
+  },
+  "Actions": [
+    {
+      "Identifier": "logging",
+      "Type": "UpdateFlowLoggingBehavior",
+      "Parameters": {
+        "FlowLoggingBehavior": "Enabled"
+      },
+      "Transitions": {
+        "NextAction": "contact-lens-analytics",
+        "Errors": [],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "contact-lens-analytics",
+      "Type": "UpdateContactRecordingBehavior",
+      "Parameters": {
+        "RecordingBehavior": {
+          "RecordedParticipants": [
+            "Agent",
+            "Customer"
+          ],
+          "IVRRecordingBehavior": "Enabled"
+        },
+        "AnalyticsBehavior": {
+          "Enabled": "True",
+          "AnalyticsLanguage": "th-TH",
+          "ChannelConfiguration": {
+            "Voice": {
+              "AnalyticsModes": [
+                "PostContact",
+                "AutomatedInteraction"
+              ]
+            }
+          }
+        }
+      },
+      "Transitions": {
+        "NextAction": "set-voice",
+        "Errors": [],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "set-voice",
+      "Type": "UpdateContactTextToSpeechVoice",
+      "Parameters": {
+        "TextToSpeechVoice": "SUDA",
+        "TextToSpeechEngine": "connect:agentic"
+      },
+      "Transitions": {
+        "NextAction": "set-language",
+        "Errors": [
+          {
+            "NextAction": "set-language",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "set-language",
+      "Type": "UpdateContactData",
+      "Parameters": {
+        "LanguageCode": "th-TH"
+      },
+      "Transitions": {
+        "NextAction": "scenario-branch",
+        "Errors": [
+          {
+            "NextAction": "scenario-branch",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "scenario-branch",
+      "Type": "Compare",
+      "Parameters": {
+        "ComparisonValue": "$.Attributes.scenario"
+      },
+      "Transitions": {
+        "NextAction": "intro-bank",
+        "Errors": [
+          {
+            "NextAction": "intro-bank",
+            "ErrorType": "NoMatchingCondition"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "intro-bank",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "bank"
+              ]
+            }
+          },
+          {
+            "NextAction": "intro-insurance",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "insurance"
+              ]
+            }
+          },
+          {
+            "NextAction": "intro-broker",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "broker"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "intro-bank",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "สวัสดีค่ะ ดิฉันโทรมาจากฝ่ายบริการลูกค้าของธนาคารนะคะ"
+      },
+      "Transitions": {
+        "NextAction": "input-bank",
+        "Errors": [
+          {
+            "NextAction": "input-bank",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "intro-insurance",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของบริษัทประกันค่ะ โทรมาเพื่อนำเสนอข้อมูลแผนความคุ้มครอง การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการค่ะ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต หากสนใจจะให้เจ้าหน้าที่ผู้ได้รับอนุญาตติดต่อกลับค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "input-insurance",
+        "Errors": [
+          {
+            "NextAction": "input-insurance",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "intro-broker",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของบริษัทหลักทรัพย์ค่ะ โทรมาแจ้งข้อมูลสัมมนาการลงทุน ไม่ใช่การให้คำแนะนำการลงทุนค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ และผู้แนะนำการลงทุนที่ได้รับอนุญาตจะเป็นผู้ดูแลรายละเอียดค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "input-broker",
+        "Errors": [
+          {
+            "NextAction": "input-broker",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "input-bank",
+      "Type": "ConnectParticipantWithLexBot",
+      "Parameters": {
+        "Text": "ไม่ทราบว่ากำลังเรียนสายคุณ $.Attributes.customerName อยู่หรือเปล่าคะ",
+        "LexV2Bot": {
+          "AliasArn": "${MantleLexAlias.Arn}"
+        },
+        "LexSessionAttributes": {
+          "scenario": "$.Attributes.scenario",
+          "customerName": "$.Attributes.customerName",
+          "amount": "$.Attributes.amount",
+          "dueDate": "$.Attributes.dueDate",
+          "mantleState": "{}",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+        }
+      },
+      "Transitions": {
+        "NextAction": "route-result",
+        "Errors": [
+          {
+            "NextAction": "error-message",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "error-message",
+            "ErrorType": "NoMatchingCondition"
+          },
+          {
+            "NextAction": "error-message",
+            "ErrorType": "InputTimeLimitExceeded"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "FallbackIntent"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "MantleDialogue"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "input-insurance",
+      "Type": "ConnectParticipantWithLexBot",
+      "Parameters": {
+        "Text": "คุณ $.Attributes.customerName สะดวกคุยสักครู่ไหมคะ",
+        "LexV2Bot": {
+          "AliasArn": "${MantleLexAlias.Arn}"
+        },
+        "LexSessionAttributes": {
+          "scenario": "$.Attributes.scenario",
+          "customerName": "$.Attributes.customerName",
+          "amount": "$.Attributes.amount",
+          "dueDate": "$.Attributes.dueDate",
+          "mantleState": "{}",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+        }
+      },
+      "Transitions": {
+        "NextAction": "route-result",
+        "Errors": [
+          {
+            "NextAction": "error-message",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "error-message",
+            "ErrorType": "NoMatchingCondition"
+          },
+          {
+            "NextAction": "error-message",
+            "ErrorType": "InputTimeLimitExceeded"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "FallbackIntent"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "MantleDialogue"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "input-broker",
+      "Type": "ConnectParticipantWithLexBot",
+      "Parameters": {
+        "Text": "คุณ $.Attributes.customerName สนใจรับรายละเอียดไหมคะ",
+        "LexV2Bot": {
+          "AliasArn": "${MantleLexAlias.Arn}"
+        },
+        "LexSessionAttributes": {
+          "scenario": "$.Attributes.scenario",
+          "customerName": "$.Attributes.customerName",
+          "amount": "$.Attributes.amount",
+          "dueDate": "$.Attributes.dueDate",
+          "mantleState": "{}",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+        }
+      },
+      "Transitions": {
+        "NextAction": "route-result",
+        "Errors": [
+          {
+            "NextAction": "error-message",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "error-message",
+            "ErrorType": "NoMatchingCondition"
+          },
+          {
+            "NextAction": "error-message",
+            "ErrorType": "InputTimeLimitExceeded"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "FallbackIntent"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "MantleDialogue"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "input-resume",
+      "Type": "ConnectParticipantWithLexBot",
+      "Parameters": {
+        "Text": "$.Lex.SessionAttributes.nextPrompt",
+        "LexV2Bot": {
+          "AliasArn": "${MantleLexAlias.Arn}"
+        },
+        "LexSessionAttributes": {
+          "scenario": "$.Attributes.scenario",
+          "customerName": "$.Attributes.customerName",
+          "amount": "$.Attributes.amount",
+          "dueDate": "$.Attributes.dueDate",
+          "mantleState": "$.Lex.SessionAttributes.mantleState",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+        }
+      },
+      "Transitions": {
+        "NextAction": "route-result",
+        "Errors": [
+          {
+            "NextAction": "error-message",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "error-message",
+            "ErrorType": "NoMatchingCondition"
+          },
+          {
+            "NextAction": "error-message",
+            "ErrorType": "InputTimeLimitExceeded"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "FallbackIntent"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "MantleDialogue"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "route-result",
+      "Type": "Compare",
+      "Parameters": {
+        "ComparisonValue": "$.Lex.SessionAttributes.done"
+      },
+      "Transitions": {
+        "NextAction": "input-resume",
+        "Errors": [
+          {
+            "NextAction": "input-resume",
+            "ErrorType": "NoMatchingCondition"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "closing-message",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "true"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "closing-message",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "$.Lex.SessionAttributes.nextPrompt"
+      },
+      "Transitions": {
+        "NextAction": "record-outcome",
+        "Errors": [
+          {
+            "NextAction": "record-outcome",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "record-outcome",
+      "Type": "InvokeLambdaFunction",
+      "Parameters": {
+        "LambdaFunctionARN": "${SessionContextFunctionArn}",
+        "InvocationTimeLimitSeconds": "8",
+        "LambdaInvocationAttributes": {
+          "mode": "outcome",
+          "scenario": "$.Attributes.scenario",
+          "outcomeType": "$.Lex.SessionAttributes.outcomeType",
+          "outcomeDetail": "$.Lex.SessionAttributes.outcomeDetail",
+          "paymentType": "$.Lex.SessionAttributes.paymentType",
+          "paymentDate": "$.Lex.SessionAttributes.paymentDate",
+          "paymentAmount": "$.Lex.SessionAttributes.paymentAmount",
+          "productInterest": "$.Lex.SessionAttributes.productInterest",
+          "preferredTime": "$.Lex.SessionAttributes.preferredTime",
+          "topicInterest": "$.Lex.SessionAttributes.topicInterest"
+        }
+      },
+      "Transitions": {
+        "NextAction": "disconnect",
+        "Errors": [
+          {
+            "NextAction": "disconnect",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "error-message",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "ขออภัยค่ะ ระบบทดลองยังไม่สามารถดำเนินการต่อได้ กรุณาลองใหม่ภายหลังค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "disconnect",
+        "Errors": [
+          {
+            "NextAction": "disconnect",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "disconnect",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}

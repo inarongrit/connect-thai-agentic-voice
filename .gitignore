@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+web/node_modules/
+
+# Operational rollback snapshots: contain live ARNs, account IDs, phone numbers
+# and the CloudFront origin secret. Reproducible from AWS; never publish.
+backups/
+
+# AI-DLC rules are vendored from a release, not source of this repo
+.aidlc/
+
+# Local build and tooling artifacts
+__pycache__/
+*.py[cod]
+*.zip
+*.tar.gz
+.playwright-mcp/
+*.png
+
+# Local environment and credentials - never commit
+.env
+.env.*
+*.pem
+*.key
+credentials
+.aws/
+
+# Editor
+.DS_Store
+.vscode/
+.idea/

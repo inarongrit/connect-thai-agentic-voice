@@ -1,0 +1,1152 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  FSI Outbound Demo - Thai agentic voice outbound calls via Amazon Connect.
+  QR/web page starts WebRTC or outbound AI calls in 3 scenarios: bank loan collection,
+  insurance recommendation, brokerage market update.
+  Prerequisites: an existing Amazon Connect instance with agentic voice available,
+  and a claimed outbound-capable phone number. After deploy, run post-deploy.sh.
+
+Parameters:
+  ConnectInstanceArn:
+    Type: String
+    Description: ARN of the existing Amazon Connect instance
+    AllowedPattern: ^arn:aws:connect:[a-z0-9-]+:\d{12}:instance/[a-f0-9-]+$
+  ConnectInstanceId:
+    Type: String
+    Description: Instance ID (the UUID part of the instance ARN)
+  SourcePhoneNumber:
+    Type: String
+    Description: Outbound caller ID - a phone number already claimed on the instance (E.164, e.g. +15551230000)
+    AllowedPattern: ^\+\d{7,15}$
+  ApiOriginSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Random secret injected by CloudFront and validated by the call Lambda
+  MantleContactFlowId:
+    Type: String
+    Default: ''
+    Description: Optional contact flow ID for the isolated Luna/Terra dialogue path
+  MantleEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: [ 'true', 'false' ]
+    Description: Explicit feature flag; managed Q remains the default
+  GithubFeedbackRepo:
+    Type: String
+    Default: ''
+    Description: Optional owner/repo that mirrors tester feedback as issues
+  GithubTokenSecret:
+    Type: String
+    Default: ''
+    Description: Secrets Manager id holding the GitHub token; never a literal token
+  GithubFeedbackEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: [ 'true', 'false' ]
+    Description: Mirror feedback into the issue tracker
+
+Resources:
+
+  # ── Q in Connect (Wisdom) ────────────────────────────────────────────
+  Assistant:
+    Type: AWS::Wisdom::Assistant
+    Properties:
+      Name: fsi-demo-assistant
+      Type: AGENT
+      Description: Q in Connect assistant for FSI outbound demo (Thai)
+
+  KnowledgeBase:
+    Type: AWS::Wisdom::KnowledgeBase
+    Properties:
+      Name: fsi-demo-kb
+      KnowledgeBaseType: CUSTOM
+
+  AssistantKbAssociation:
+    Type: AWS::Wisdom::AssistantAssociation
+    Properties:
+      AssistantId: !GetAtt Assistant.AssistantId
+      AssociationType: KNOWLEDGE_BASE
+      Association:
+        KnowledgeBaseId: !GetAtt KnowledgeBase.KnowledgeBaseId
+
+  # Q in Connect <-> Connect instance link
+  WisdomIntegration:
+    Type: AWS::Connect::IntegrationAssociation
+    Properties:
+      InstanceId: !Ref ConnectInstanceArn
+      IntegrationType: WISDOM_ASSISTANT
+      IntegrationArn: !GetAtt Assistant.AssistantArn
+
+  # ── IAM ──────────────────────────────────────────────────────────────
+  LexBotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub fsi-demo-lex-bot-role-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lexv2.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LexQInConnectAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [ 'polly:SynthesizeSpeech' ]
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - wisdom:CreateSession
+                  - wisdom:GetSession
+                  - wisdom:UpdateSession
+                  - wisdom:GetAssistant
+                  - wisdom:GetAIAgent
+                  - wisdom:GetAIPrompt
+                  - wisdom:QueryAssistant
+                  - wisdom:GetRecommendations
+                  - wisdom:NotifyRecommendationsReceived
+                  - wisdom:SendMessage
+                  - wisdom:GetNextMessage
+                  - wisdom:ListMessages
+                  - wisdom:GetContent
+                  - wisdom:SearchContent
+                  - wisdom:UpdateSessionData
+                Resource: '*'
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub fsi-demo-lambda-role-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FeedbackStore
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [ dynamodb:PutItem, dynamodb:UpdateItem ]
+                Resource: !GetAtt FeedbackTable.Arn
+              - Effect: Allow
+                Action: [ connect:GetContactAttributes ]
+                Resource: !Sub '${ConnectInstanceArn}/contact/*'
+        - PolicyName: StartOutboundCall
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [ 'connect:StartOutboundVoiceContact', 'connect:StartWebRTCContact', 'connect:DescribeContact' ]
+                Resource: !Sub '${ConnectInstanceArn}/*'
+              - Effect: Allow
+                Action:
+                  - wisdom:UpdateSession
+                  - wisdom:UpdateSessionData
+                  - wisdom:GetSession
+                Resource: '*'
+              - Effect: Allow
+                Action: [ 'connect:UpdateContactAttributes' ]
+                Resource: !Sub '${ConnectInstanceArn}/contact/*'
+              - Effect: Allow
+                Action: [ 'logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents' ]
+                Resource: '*'
+
+  # ── Lex bot ──────────────────────────────────────────────────────────
+  # NOTE: Advanced ASR (speech model preference) and the Q in Connect AI
+  # prompt/agent wiring are applied by post-deploy.sh (API-only features).
+  LexBot:
+    Type: AWS::Lex::Bot
+    Properties:
+      Name: fsi-demo-bot
+      RoleArn: !GetAtt LexBotRole.Arn
+      DataPrivacy: { ChildDirected: false }
+      IdleSessionTTLInSeconds: 300
+      AutoBuildBotLocales: true
+      BotLocales:
+        - LocaleId: th_TH
+          NluConfidenceThreshold: 0.4
+          Intents:
+            - Name: FSIQInConnect
+              ParentIntentSignature: AMAZON.QInConnectIntent
+              QInConnectIntentConfiguration:
+                QInConnectAssistantConfiguration:
+                  AssistantArn: !GetAtt Assistant.AssistantArn
+              FulfillmentCodeHook:
+                Enabled: false
+                IsActive: true
+                PostFulfillmentStatusSpecification:
+                  SuccessResponse:
+                    AllowInterrupt: true
+                    MessageGroupsList:
+                      - Message:
+                          PlainTextMessage:
+                            Value: '((x-amz-lex:q-in-connect-response))'
+                  SuccessNextStep: { DialogAction: { Type: ElicitIntent } }
+                  FailureNextStep: { DialogAction: { Type: ElicitIntent } }
+                  TimeoutNextStep: { DialogAction: { Type: ElicitIntent } }
+            - Name: FallbackIntent
+              ParentIntentSignature: AMAZON.FallbackIntent
+
+  LexBotVersion:
+    Type: AWS::Lex::BotVersion
+    Properties:
+      BotId: !Ref LexBot
+      BotVersionLocaleSpecification:
+        - LocaleId: th_TH
+          BotVersionLocaleDetails: { SourceBotVersion: DRAFT }
+
+  LexBotAlias:
+    Type: AWS::Lex::BotAlias
+    Properties:
+      BotAliasName: live
+      BotId: !Ref LexBot
+      BotVersion: !GetAtt LexBotVersion.BotVersion
+      BotAliasLocaleSettings:
+        - LocaleId: th_TH
+          BotAliasLocaleSetting: { Enabled: true }
+
+  LexIntegration:
+    Type: AWS::Connect::IntegrationAssociation
+    Properties:
+      InstanceId: !Ref ConnectInstanceArn
+      IntegrationType: LEX_BOT
+      IntegrationArn: !GetAtt LexBotAlias.Arn
+
+  # ── Contact flow ─────────────────────────────────────────────────────
+  ContactFlow:
+    Type: AWS::Connect::ContactFlow
+    Properties:
+      Name: FSI Outbound Demo Flow
+      Description: Outbound demo - bank collection, insurance reco, brokerage marketing (Thai agentic voice)
+      InstanceArn: !Ref ConnectInstanceArn
+      Type: CONTACT_FLOW
+      DependsOn: SessionContextAssociation
+      Content: !Sub |
+        {"Version":"2019-10-30","StartAction":"logging-1","Metadata":{"entryPointPosition":{"x":15,"y":15},"snapToGrid":false,"name":"FSI Outbound Demo Flow","description":"Scenario agents with deterministic outcome routing","type":"contactFlow","status":"published","ActionMetadata":{"logging-1":{"position":{"x":100,"y":60}},"set-voice-1":{"position":{"x":280,"y":60}},"set-lang-1":{"position":{"x":460,"y":60}},"wisdom-1":{"position":{"x":640,"y":60}},"ctx-1":{"position":{"x":820,"y":60}},"branch-1":{"position":{"x":1000,"y":60}},"input-bank":{"position":{"x":1360,"y":60}},"route-bank":{"position":{"x":100,"y":210}},"outcome-bank":{"position":{"x":280,"y":210}},"input-insurance":{"position":{"x":1360,"y":210}},"route-insurance":{"position":{"x":640,"y":210}},"outcome-insurance":{"position":{"x":820,"y":210}},"input-broker":{"position":{"x":1360,"y":360}},"route-broker":{"position":{"x":1180,"y":210}},"outcome-broker":{"position":{"x":100,"y":360}},"disconnect-1":{"position":{"x":280,"y":360}},"intro-bank":{"position":{"x":1180,"y":60}},"intro-insurance":{"position":{"x":1180,"y":210}},"intro-broker":{"position":{"x":1180,"y":360}},"contact-lens-analytics":{"position":{"x":120,"y":230}}}},"Actions":[{"Identifier":"logging-1","Type":"UpdateFlowLoggingBehavior","Parameters":{"FlowLoggingBehavior":"Enabled"},"Transitions":{"NextAction":"contact-lens-analytics","Errors":[],"Conditions":[]}},{"Identifier":"contact-lens-analytics","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"},"AnalyticsBehavior":{"Enabled":"True","AnalyticsLanguage":"th-TH","ChannelConfiguration":{"Voice":{"AnalyticsModes":["PostContact","AutomatedInteraction"]}}}},"Transitions":{"NextAction":"set-voice-1","Errors":[],"Conditions":[]}},{"Identifier":"set-voice-1","Type":"UpdateContactTextToSpeechVoice","Parameters":{"TextToSpeechVoice":"SUDA","TextToSpeechEngine":"connect:agentic"},"Transitions":{"NextAction":"set-lang-1","Errors":[{"NextAction":"set-lang-1","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"set-lang-1","Type":"UpdateContactData","Parameters":{"LanguageCode":"th-TH"},"Transitions":{"NextAction":"wisdom-1","Errors":[{"NextAction":"wisdom-1","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"wisdom-1","Type":"CreateWisdomSession","Parameters":{"WisdomAssistantArn":"${Assistant.AssistantArn}"},"Transitions":{"NextAction":"ctx-1","Errors":[{"NextAction":"ctx-1","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"ctx-1","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunction.Arn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"sessionArn":"$.Wisdom.SessionArn","scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate"}},"Transitions":{"NextAction":"branch-1","Errors":[{"NextAction":"branch-1","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"branch-1","Type":"Compare","Parameters":{"ComparisonValue":"$.Attributes.scenario"},"Transitions":{"NextAction":"intro-bank","Errors":[{"NextAction":"intro-bank","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"intro-bank","Condition":{"Operator":"Equals","Operands":["bank"]}},{"NextAction":"intro-insurance","Condition":{"Operator":"Equals","Operands":["insurance"]}},{"NextAction":"intro-broker","Condition":{"Operator":"Equals","Operands":["broker"]}}]}},{"Identifier":"input-bank","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"ไม่ทราบว่ากำลังเรียนสายคุณ $.Attributes.customerName อยู่หรือเปล่าคะ","LexV2Bot":{"AliasArn":"${LexBotAlias.Arn}"},"LexSessionAttributes":{"x-amz-lex:q-in-connect:session-arn":"$.Wisdom.SessionArn","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-bank","Errors":[{"NextAction":"disconnect-1","ErrorType":"NoMatchingError"},{"NextAction":"disconnect-1","ErrorType":"NoMatchingCondition"},{"NextAction":"disconnect-1","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[]}},{"Identifier":"route-bank","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.Tool"},"Transitions":{"NextAction":"disconnect-1","Errors":[{"NextAction":"disconnect-1","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"outcome-bank","Condition":{"Operator":"Equals","Operands":["BANK_OUTCOME"]}}]}},{"Identifier":"outcome-bank","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunction.Arn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","sessionArn":"$.Wisdom.SessionArn","scenario":"bank","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail","paymentType":"$.Lex.SessionAttributes.paymentType","paymentDate":"$.Lex.SessionAttributes.paymentDate","paymentAmount":"$.Lex.SessionAttributes.paymentAmount"}},"Transitions":{"NextAction":"disconnect-1","Errors":[{"NextAction":"disconnect-1","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"input-insurance","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"คุณ $.Attributes.customerName สะดวกคุยสักครู่ไหมคะ","LexV2Bot":{"AliasArn":"${LexBotAlias.Arn}"},"LexSessionAttributes":{"x-amz-lex:q-in-connect:session-arn":"$.Wisdom.SessionArn","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-insurance","Errors":[{"NextAction":"disconnect-1","ErrorType":"NoMatchingError"},{"NextAction":"disconnect-1","ErrorType":"NoMatchingCondition"},{"NextAction":"disconnect-1","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[]}},{"Identifier":"route-insurance","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.Tool"},"Transitions":{"NextAction":"disconnect-1","Errors":[{"NextAction":"disconnect-1","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"outcome-insurance","Condition":{"Operator":"Equals","Operands":["INSURANCE_OUTCOME"]}}]}},{"Identifier":"outcome-insurance","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunction.Arn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","sessionArn":"$.Wisdom.SessionArn","scenario":"insurance","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail","productInterest":"$.Lex.SessionAttributes.productInterest","preferredTime":"$.Lex.SessionAttributes.preferredTime"}},"Transitions":{"NextAction":"disconnect-1","Errors":[{"NextAction":"disconnect-1","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"input-broker","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"คุณ $.Attributes.customerName สนใจรับรายละเอียดไหมคะ","LexV2Bot":{"AliasArn":"${LexBotAlias.Arn}"},"LexSessionAttributes":{"x-amz-lex:q-in-connect:session-arn":"$.Wisdom.SessionArn","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-broker","Errors":[{"NextAction":"disconnect-1","ErrorType":"NoMatchingError"},{"NextAction":"disconnect-1","ErrorType":"NoMatchingCondition"},{"NextAction":"disconnect-1","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[]}},{"Identifier":"route-broker","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.Tool"},"Transitions":{"NextAction":"disconnect-1","Errors":[{"NextAction":"disconnect-1","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"outcome-broker","Condition":{"Operator":"Equals","Operands":["BROKERAGE_OUTCOME"]}}]}},{"Identifier":"outcome-broker","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunction.Arn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","sessionArn":"$.Wisdom.SessionArn","scenario":"broker","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail","preferredTime":"$.Lex.SessionAttributes.preferredTime","topicInterest":"$.Lex.SessionAttributes.topicInterest"}},"Transitions":{"NextAction":"disconnect-1","Errors":[{"NextAction":"disconnect-1","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"disconnect-1","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}},{"Identifier":"intro-bank","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันโทรมาจากฝ่ายบริการลูกค้าของธนาคารนะคะ"},"Transitions":{"NextAction":"input-bank","Errors":[{"NextAction":"input-bank","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"intro-insurance","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของบริษัทประกันค่ะ โทรมาเพื่อนำเสนอข้อมูลแผนความคุ้มครอง การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการค่ะ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต หากสนใจจะให้เจ้าหน้าที่ผู้ได้รับอนุญาตติดต่อกลับค่ะ"},"Transitions":{"NextAction":"input-insurance","Errors":[{"NextAction":"input-insurance","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"intro-broker","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของบริษัทหลักทรัพย์ค่ะ โทรมาแจ้งข้อมูลสัมมนาการลงทุน ไม่ใช่การให้คำแนะนำการลงทุนค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ และผู้แนะนำการลงทุนที่ได้รับอนุญาตจะเป็นผู้ดูแลรายละเอียดค่ะ"},"Transitions":{"NextAction":"input-broker","Errors":[{"NextAction":"input-broker","ErrorType":"NoMatchingError"}],"Conditions":[]}}]}
+  # ── Lambda + API ─────────────────────────────────────────────────────
+  SessionContextFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fsi-qic-session-context
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          INSTANCE_ID: !Ref ConnectInstanceId
+          SCENARIO_AGENT_IDS: '{}'
+      Code:
+        ZipFile: |
+          """Select scenario agents, initialize session state, and persist terminal outcomes."""
+          import json
+          import os
+          import re
+          
+          import boto3
+          
+          qconnect = boto3.client("qconnect")
+          connect = boto3.client("connect")
+          
+          INSTANCE_ID = os.environ.get("INSTANCE_ID", "")
+          AGENT_IDS = json.loads(os.environ.get("SCENARIO_AGENT_IDS", "{}"))
+          
+          _THAI_DIGITS = ("ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า")
+          
+          
+          def _thai_integer_words(value):
+              """Render a non-negative integer as continuous Thai number words."""
+              value = int(value)
+              if value == 0:
+                  return _THAI_DIGITS[0]
+              if value >= 1_000_000:
+                  millions, remainder = divmod(value, 1_000_000)
+                  return _thai_integer_words(millions) + "ล้าน" + (
+                      _thai_integer_words(remainder) if remainder else ""
+                  )
+              words = []
+              for divisor, label in ((100_000, "แสน"), (10_000, "หมื่น"), (1_000, "พัน"), (100, "ร้อย")):
+                  digit, value = divmod(value, divisor)
+                  if digit:
+                      words.append(_THAI_DIGITS[digit] + label)
+              tens, units = divmod(value, 10)
+              if tens == 1:
+                  words.append("สิบ")
+              elif tens == 2:
+                  words.append("ยี่สิบ")
+              elif tens:
+                  words.append(_THAI_DIGITS[tens] + "สิบ")
+              if units:
+                  words.append("เอ็ด" if units == 1 and words else _THAI_DIGITS[units])
+              return "".join(words)
+          
+          
+          def _thai_baht_words(amount):
+              """Render a decimal currency attribute without exposing punctuation to TTS."""
+              raw = re.sub(r"[\s,]", "", str(amount or ""))
+              if not re.fullmatch(r"\d+(?:\.\d{1,2})?", raw):
+                  return (str(amount or "ยอดตามที่แจ้ง").strip() + "บาท").replace(" ", "")
+              whole_text, dot, fraction = raw.partition(".")
+              whole = int(whole_text)
+              satang = int((fraction + "00")[:2]) if dot else 0
+              spoken = _thai_integer_words(whole) + "บาท"
+              return spoken + (_thai_integer_words(satang) + "สตางค์" if satang else "ถ้วน")
+          
+          
+          BRIEFS = {
+              "bank": (
+                  "ROLE: Collections officer at a bank. CUSTOMER_NAME={name}. "
+                  "FACTS: AMOUNT_NUMERIC={amount}; AMOUNT_SPOKEN={amount_spoken}; DUE_DATE={due}. "
+                  "DISCLOSURE: after identity confirmation, begin with ขอบคุณที่ยืนยันตัวนะคะ คุณ followed by CUSTOMER_NAME; then speak AMOUNT_SPOKEN exactly and never vocalize AMOUNT_NUMERIC. "
+                  "OBJECTIVE: obtain a specific payment commitment with a date. "
+                  "ALLOWED OPTIONS: full payment, partial payment, or installment plan. "
+                  "FORBIDDEN: threats, shame, other products, or invented figures."
+              ),
+              "insurance": (
+                  "ROLE: Outbound representative at an insurance company. CUSTOMER: {name}. "
+                  "OBJECTIVE: discover one broad coverage need and one customer priority, share no more than one "
+                  "approved category fact, recap the customer's own words, then ask permission for a licensed-agent handoff. "
+                  "GROUNDING: use only approved facts in the AI prompt and customer-provided facts. "
+                  "ENGAGEMENT: warm and curious through relevance and accurate recap, never hype. "
+                  "CONDUCT: helpful and concise, one invitation only, accept no immediately, no hard sell, urgency, scarcity, or FOMO. "
+                  "FORBIDDEN: invented products or benefits, premiums, acceptance promises, closing a sale, loans, or pressure."
+              ),
+              "broker": (
+                  "ROLE: Client relations officer at a securities brokerage. CUSTOMER: {name}. "
+                  "OBJECTIVE: discover the customer's learning topic and general experience before offering tailored seminar "
+                  "details or a licensed consultation; generic interest never closes the call. "
+                  "GROUNDING: use only approved educational facts in the AI prompt and customer-provided facts; no live market claims. "
+                  "ENGAGEMENT: warm and curious through relevance and accurate recap, never hype. "
+                  "CONDUCT: helpful and concise, one invitation only, accept no immediately, no hard sell, urgency, scarcity, fear, or FOMO. "
+                  "FORBIDDEN: stock recommendations, returns, price targets, suitability decisions, invented information, loans, or insurance."
+              ),
+          }
+          
+          INITIAL_STATE = {
+              "bank": {
+                  "version": 2,
+                  "scenario": "bank",
+                  "stage": "verify_identity",
+                  "objective": "verify identity, collect one payment value per turn, and confirm the complete read-back",
+                  "requiredBeforeClose": [
+                      "identityConfirmed",
+                      "paymentType",
+                      "paymentDate",
+                      "explicitConfirmation",
+                  ],
+                  "outcome": "pending",
+                  "turnBudget": 9,
+                  "noiseRecovery": {
+                      "neverGuess": True,
+                      "repeatBeforeCallback": 2,
+                      "fallback": "offer_callback",
+                  },
+              },
+              "insurance": {
+                  "version": 2,
+                  "scenario": "insurance",
+                  "stage": "qualify_need",
+                  "objective": "identify one need and customer priority, obtain handoff permission, then confirm appointment timing",
+                  "requiredBeforeClose": [
+                      "productInterest",
+                      "customerPriority",
+                      "preferredTime",
+                      "explicitConfirmation",
+                  ],
+                  "outcome": "pending",
+                  "turnBudget": 9,
+                  "noiseRecovery": {
+                      "neverGuess": True,
+                      "repeatBeforeCallback": 2,
+                      "fallback": "offer_callback",
+                  },
+              },
+              "broker": {
+                  "version": 2,
+                  "scenario": "broker",
+                  "stage": "discover_interest",
+                  "objective": "discover topic and experience, then send tailored seminar details or confirm licensed-consultation timing",
+                  "requiredBeforeClose": ["topicInterest", "experienceLevel", "selectedAction"],
+                  "confirmationRequiredFor": ["consultation"],
+                  "outcome": "pending",
+                  "turnBudget": 8,
+                  "noiseRecovery": {
+                      "neverGuess": True,
+                      "repeatBeforeCallback": 2,
+                      "fallback": "offer_callback",
+                  },
+              },
+          }
+          
+          
+          def _parse_session_arn(session_arn):
+              tail = session_arn.split(":session/", 1)[1]
+              assistant_id, session_id = tail.split("/", 1)
+              return assistant_id, session_id
+          
+          
+          def _session_ids(parameters):
+              return _parse_session_arn(parameters.get("sessionArn", ""))
+          
+          
+          def _clean_attributes(values):
+              return {
+                  key: str(value)[:32767]
+                  for key, value in values.items()
+                  if value not in (None, "", "$.Lex.SessionAttributes.undefined")
+              }
+          
+          
+          def _record_outcome(event, parameters):
+              scenario = (parameters.get("scenario") or "unknown").lower()
+              outcome_type = parameters.get("outcomeType") or "unknown"
+              details = _clean_attributes(
+                  {
+                      "fsiScenario": scenario,
+                      "fsiOutcome": outcome_type,
+                      "fsiOutcomeDetail": parameters.get("outcomeDetail"),
+                      "fsiPaymentType": parameters.get("paymentType"),
+                      "fsiPaymentDate": parameters.get("paymentDate"),
+                      "fsiPaymentAmount": parameters.get("paymentAmount"),
+                      "fsiProductInterest": parameters.get("productInterest"),
+                      "fsiPreferredTime": parameters.get("preferredTime"),
+                      "fsiTopicInterest": parameters.get("topicInterest"),
+                  }
+              )
+          
+              session_arn = parameters.get("sessionArn", "")
+              if ":session/" in session_arn:
+                  assistant_id, session_id = _parse_session_arn(session_arn)
+                  terminal_state = {
+                      "version": 1,
+                      "scenario": scenario,
+                      "stage": "closed",
+                      "outcome": outcome_type,
+                      "details": details,
+                  }
+                  qconnect.update_session_data(
+                      assistantId=assistant_id,
+                      sessionId=session_id,
+                      data=[
+                          {
+                              "key": "callState",
+                              "value": {
+                                  "stringValue": json.dumps(
+                                      terminal_state, ensure_ascii=False, separators=(",", ":")
+                                  )
+                              },
+                          }
+                      ],
+                  )
+          
+              contact_data = event.get("Details", {}).get("ContactData", {}) or {}
+              contact_id = contact_data.get("InitialContactId") or contact_data.get("ContactId")
+              if INSTANCE_ID and contact_id and details:
+                  connect.update_contact_attributes(
+                      InstanceId=INSTANCE_ID,
+                      InitialContactId=contact_id,
+                      Attributes=details,
+                  )
+              return {"status": "ok", "mode": "outcome", "outcome": outcome_type}
+          
+          
+          def _setup_session(parameters):
+              session_arn = parameters.get("sessionArn", "")
+              scenario = (parameters.get("scenario") or "bank").lower()
+              if scenario not in BRIEFS:
+                  scenario = "bank"
+          
+              name = parameters.get("customerName") or "ลูกค้า"
+              amount = parameters.get("amount") or "-"
+              amount_spoken = _thai_baht_words(amount)
+              due_date = parameters.get("dueDate") or "-"
+              assistant_id, session_id = _parse_session_arn(session_arn)
+          
+              agent_id = AGENT_IDS.get(scenario)
+              if not agent_id:
+                  raise ValueError(f"missing agent ID for scenario: {scenario}")
+          
+              brief = BRIEFS[scenario].format(name=name, amount=amount, amount_spoken=amount_spoken, due=due_date)
+              call_state = dict(INITIAL_STATE[scenario])
+              call_state["customerName"] = name
+          
+              qconnect.update_session(
+                  assistantId=assistant_id,
+                  sessionId=session_id,
+                  aiAgentConfiguration={"SELF_SERVICE": {"aiAgentId": agent_id}},
+              )
+              qconnect.update_session_data(
+                  assistantId=assistant_id,
+                  sessionId=session_id,
+                  data=[
+                      {"key": "scenarioBrief", "value": {"stringValue": brief}},
+                      {"key": "customerName", "value": {"stringValue": name}},
+                      {
+                          "key": "callState",
+                          "value": {
+                              "stringValue": json.dumps(
+                                  call_state, ensure_ascii=False, separators=(",", ":")
+                              )
+                          },
+                      },
+                  ],
+              )
+              return {
+                  "status": "ok",
+                  "mode": "setup",
+                  "scenario": scenario,
+                  "agentId": agent_id,
+                  "stage": call_state["stage"],
+              }
+          
+          
+          def handler(event, context):
+              parameters = event.get("Details", {}).get("Parameters", {}) or {}
+              try:
+                  if parameters.get("mode") == "outcome":
+                      return _record_outcome(event, parameters)
+                  return _setup_session(parameters)
+              except (IndexError, ValueError) as error:
+                  print(f"invalid session setup: {error}")
+                  return {"status": "skipped", "reason": "invalid session setup"}
+              except Exception as error:  # never break the call over context persistence
+                  print(f"session operation failed: {error}")
+                  return {"status": "error", "reason": "session operation failed"}
+
+  SessionContextPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SessionContextFunction
+      Action: lambda:InvokeFunction
+      Principal: connect.amazonaws.com
+      SourceArn: !Ref ConnectInstanceArn
+
+  SessionContextAssociation:
+    Type: AWS::Connect::IntegrationAssociation
+    Properties:
+      InstanceId: !Ref ConnectInstanceArn
+      IntegrationType: LAMBDA_FUNCTION
+      IntegrationArn: !GetAtt SessionContextFunction.Arn
+
+  FeedbackTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: contactId
+          AttributeType: S
+        - AttributeName: submittedAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: contactId
+          KeyType: HASH
+        - AttributeName: submittedAt
+          KeyType: RANGE
+
+  TriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fsi-outbound-demo-trigger
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 15
+      Environment:
+        Variables:
+          INSTANCE_ID: !Ref ConnectInstanceId
+          CONTACT_FLOW_ID: !Select [ 3, !Split [ '/', !GetAtt ContactFlow.ContactFlowArn ] ]
+          SOURCE_PHONE: !Ref SourcePhoneNumber
+          ORIGIN_SECRET: !Ref ApiOriginSecret
+          MANTLE_CONTACT_FLOW_ID: !Ref MantleContactFlowId
+          MANTLE_ENABLED: !Ref MantleEnabled
+          FEEDBACK_TABLE: !Ref FeedbackTable
+          GITHUB_REPO: !Ref GithubFeedbackRepo
+          GITHUB_TOKEN_SECRET: !Ref GithubTokenSecret
+          GITHUB_FEEDBACK_ENABLED: !Ref GithubFeedbackEnabled
+      Code:
+        ZipFile: |
+          """Start either a Thai PSTN callback or an Amazon Connect WebRTC contact."""
+          import hashlib
+          import hmac
+          import json
+          import os
+          import re
+          import secrets as secure_random
+          import time
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+          
+          import boto3
+          
+          connect = boto3.client("connect", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+          
+          INSTANCE_ID = os.environ["INSTANCE_ID"]
+          CONTACT_FLOW_ID = os.environ["CONTACT_FLOW_ID"]
+          SOURCE_PHONE = os.environ["SOURCE_PHONE"]
+          ORIGIN_SECRET = os.environ.get("ORIGIN_SECRET", "")
+          MANTLE_CONTACT_FLOW_ID = os.environ.get("MANTLE_CONTACT_FLOW_ID", "")
+          MANTLE_ENABLED = os.environ.get("MANTLE_ENABLED", "false").lower() == "true"
+          
+          VALID_SCENARIOS = {"bank", "insurance", "broker"}
+          PHONE_RE = re.compile(r"^\+66\d{8,9}$")
+          
+          SCENARIO_DEFAULTS = {
+              "insurance": {"amount": "", "dueDate": ""},
+              "broker": {"amount": "", "dueDate": ""},
+          }
+          
+          BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
+          THAI_MONTHS = (
+              "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+              "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
+          )
+          
+          
+          def _dynamic_bank_facts(current_date=None):
+              """Generate one trusted, voice-rich set of Bank facts for a single contact."""
+              today = current_date or datetime.now(BANGKOK_TZ).date()
+              baht = 10_000 + secure_random.randbelow(90_000)
+              satang = 1 + secure_random.randbelow(99)
+              days_back = 1 + secure_random.randbelow(5)
+              due = today - timedelta(days=days_back)
+              return {
+                  "amount": f"{baht:,}.{satang:02d}",
+                  "dueDate": f"{due.day} {THAI_MONTHS[due.month - 1]} {due.year + 543}",
+              }
+          
+          CORS_HEADERS = {
+              "Access-Control-Allow-Origin": "*",
+              "Access-Control-Allow-Methods": "POST,OPTIONS",
+              "Access-Control-Allow-Headers": "Content-Type",
+              "Content-Type": "application/json",
+          }
+          
+          
+          def _resp(status, body):
+              return {
+                  "statusCode": status,
+                  "headers": CORS_HEADERS,
+                  "body": json.dumps(body, ensure_ascii=False),
+              }
+          
+          
+          def _status_token(contact_id):
+              expires = int(time.time()) + 3600
+              payload = f"{contact_id}.{expires}"
+              signature = hmac.new(ORIGIN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+              return f"{payload}.{signature}"
+          
+          
+          def _contact_id_from_token(token):
+              try:
+                  contact_id, expires, supplied_signature = str(token).split(".", 2)
+                  payload = f"{contact_id}.{expires}"
+                  expected_signature = hmac.new(ORIGIN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+                  if int(expires) < int(time.time()) or not hmac.compare_digest(supplied_signature, expected_signature):
+                      raise ValueError("invalid status token")
+                  if not re.fullmatch(r"[a-f0-9-]{36}", contact_id):
+                      raise ValueError("invalid status token")
+                  return contact_id
+              except (TypeError, ValueError):
+                  raise ValueError("invalid status token") from None
+          
+          
+          def _contact_status(body):
+              contact_id = _contact_id_from_token(body.get("statusToken", ""))
+              contact = connect.describe_contact(InstanceId=INSTANCE_ID, ContactId=contact_id)["Contact"]
+              state = str(contact.get("State", "")).upper()
+              ended = bool(contact.get("DisconnectTimestamp")) or state in {"ENDED", "MISSED", "ERROR", "REJECTED"}
+              return _resp(200, {
+                  "status": "completed" if ended else "active",
+                  "state": state or None,
+                  "connected": bool(contact.get("ConnectedToSystemTimestamp")),
+              })
+          
+          
+          FEEDBACK_TABLE = os.environ.get("FEEDBACK_TABLE", "")
+          RATING_FIELDS = ("overall", "voice", "understanding", "relevance", "latency")
+          COMPLETION_VALUES = {"yes", "partial", "no"}
+          
+          GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
+          GITHUB_TOKEN_SECRET = os.environ.get("GITHUB_TOKEN_SECRET", "")
+          GITHUB_FEEDBACK_ENABLED = os.environ.get("GITHUB_FEEDBACK_ENABLED", "false").lower() == "true"
+          # Which generation of dialogue policy was deployed when this feedback was taken.
+          # Ratings collected before and after a policy change are not comparable, so the
+          # cohort has to be recorded with the rating itself.
+          POLICY_VERSION = os.environ.get("DIALOGUE_POLICY_VERSION", "v2")
+          # Option A enforces policy in code; Option B is instructed through prompts. The
+          # Option A (mantle) is the default and the only engine offered in the web UI;
+          # Option B stays callable server-side for internal comparison only.
+          ENFORCEMENT = {"mantle": "deterministic", "managed": "prompt-instructed"}
+          
+          RATING_LABELS = {
+              "overall": "ความพึงพอใจโดยรวม",
+              "voice": "ความเป็นธรรมชาติของเสียง",
+              "understanding": "ระบบเข้าใจคำพูด",
+              "relevance": "คำตอบตรงประเด็น",
+              "latency": "ความเร็วในการตอบ",
+          }
+          BRAIN_LABELS = {"managed": "ตัวเลือก B", "mantle": "ตัวเลือก A"}
+          BRAIN_TAGS = {"managed": "option-b", "mantle": "option-a"}
+          
+          dynamodb = boto3.client("dynamodb", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+          secrets = boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+          
+          _github_token = None
+          
+          
+          def _github_token_value():
+              global _github_token
+              if _github_token is None:
+                  _github_token = secrets.get_secret_value(SecretId=GITHUB_TOKEN_SECRET)["SecretString"].strip()
+              return _github_token
+          
+          
+          # The GitHub mirror may be a PUBLIC repository, and the comment box is free text:
+          # a tester can type their own phone number, national ID or email into it. The
+          # DynamoDB record keeps the raw comment because that store is access-controlled
+          # and needed for analysis; only the public copy is redacted.
+          # Threshold is 9+ digits so an ISO date (8 digits) is not mangled, while Thai
+          # mobile numbers (10), bank accounts (10-12) and national IDs (13) are caught.
+          _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+          _LONG_NUMBER_RE = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
+          
+          
+          def _redact_for_public(comment):
+              """Strip contact details a tester may have typed into the comment box."""
+              if not comment:
+                  return comment
+              redacted = _EMAIL_RE.sub("[อีเมลถูกซ่อน]", comment)
+          
+              def _mask(match):
+                  digits = sum(character.isdigit() for character in match.group())
+                  return "[หมายเลขถูกซ่อน]" if digits >= 9 else match.group()
+          
+              return _LONG_NUMBER_RE.sub(_mask, redacted)
+          
+          
+          def _issue_body(contact_id, ratings, completed, comment, context, timing):
+              lines = [
+                  "### บริบทของสายที่ทดสอบ",
+                  "",
+                  "| รายการ | ค่า |",
+                  "| --- | --- |",
+                  f"| เวลาเริ่มสาย | {timing.get('callStartedAt', '-')} |",
+                  f"| ระยะเวลา (วินาที) | {timing.get('durationSeconds', '-')} |",
+                  f"| สถานการณ์ | {context.get('scenario', 'unknown')} |",
+                  f"| ช่องทาง | {context.get('channelMode', 'unknown')} |",
+                  f"| ชุดสนทนา | {BRAIN_LABELS.get(context.get('brainMode'), 'ไม่ระบุ')} |",
+                  f"| Contact ID | `{contact_id}` |",
+                  "",
+                  "### คะแนน",
+                  "",
+                  "| หัวข้อ | คะแนน |",
+                  "| --- | --- |",
+              ]
+              for field in RATING_FIELDS:
+                  if field in ratings:
+                      lines.append(f"| {RATING_LABELS[field]} | {ratings[field]} / 5 |")
+              if completed:
+                  lines += ["", f"**ทำงานสำเร็จ:** {completed}"]
+              lines += ["", "### ความเห็นของผู้ทดสอบ", "", comment or "_ไม่มีความเห็นเพิ่มเติม_"]
+              lines += ["", "---", "_สร้างอัตโนมัติจากแบบฟอร์มความเห็นของเดโม ผู้ทดสอบไม่ระบุตัวตน_"]
+              return "\n".join(lines)
+          
+          
+          def _mirror_to_github(contact_id, ratings, completed, comment, context, timing):
+              """Best effort. Feedback is already stored in DynamoDB before this runs."""
+              if not (GITHUB_FEEDBACK_ENABLED and GITHUB_REPO and GITHUB_TOKEN_SECRET):
+                  return None
+              import urllib.error
+              import urllib.request
+          
+              brain = context.get("brainMode", "unknown")
+              title = (
+                  f"[Feedback] {context.get('scenario', 'unknown')} · "
+                  f"{BRAIN_LABELS.get(brain, 'ไม่ระบุ')} · {context.get('channelMode', 'unknown')} · "
+                  f"overall {ratings.get('overall', '-')}/5"
+              )
+              labels = ["demo-feedback"]
+              if brain in BRAIN_TAGS:
+                  labels.append(BRAIN_TAGS[brain])
+          
+              payload = json.dumps(
+                  {
+                      "title": title[:250],
+                      "body": _issue_body(contact_id, ratings, completed, comment, context, timing),
+                      "labels": labels,
+                  }
+              ).encode()
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{GITHUB_REPO}/issues",
+                  data=payload,
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {_github_token_value()}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "Content-Type": "application/json",
+                      "User-Agent": "fsi-outbound-demo-feedback",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=6) as response:
+                      return json.loads(response.read()).get("number")
+              except (urllib.error.URLError, OSError, ValueError) as error:
+                  print(f"GitHub mirror failed: {error}")
+                  return None
+          
+          
+          def _rating(value, field):
+              if value in (None, ""):
+                  return None
+              try:
+                  number = int(value)
+              except (TypeError, ValueError):
+                  raise ValueError(f"{field} must be a whole number from 1 to 5") from None
+              if not 1 <= number <= 5:
+                  raise ValueError(f"{field} must be from 1 to 5")
+              return number
+          
+          
+          def _feedback(body, event):
+              if not FEEDBACK_TABLE:
+                  return _resp(503, {"error": "feedback collection is not configured"})
+              contact_id = _contact_id_from_token(body.get("statusToken", ""))
+          
+              ratings = {}
+              for field in RATING_FIELDS:
+                  score = _rating(body.get(field), field)
+                  if score is not None:
+                      ratings[field] = score
+              if "overall" not in ratings:
+                  raise ValueError("overall rating is required")
+          
+              completed = str(body.get("completed", "")).strip().lower()
+              if completed and completed not in COMPLETION_VALUES:
+                  raise ValueError("completed must be yes, partial, or no")
+              comment = str(body.get("comment", "")).strip()[:1000]
+              tester = str(body.get("testerRole", "")).strip()[:60]
+          
+              context = {}
+              try:
+                  context = connect.get_contact_attributes(
+                      InstanceId=INSTANCE_ID, InitialContactId=contact_id
+                  ).get("Attributes", {}) or {}
+              except Exception as error:  # noqa: BLE001
+                  print(f"Feedback context lookup failed: {error}")
+          
+              timing = {}
+              try:
+                  contact = connect.describe_contact(InstanceId=INSTANCE_ID, ContactId=contact_id)["Contact"]
+                  started, ended = contact.get("InitiationTimestamp"), contact.get("DisconnectTimestamp")
+                  if started:
+                      timing["callStartedAt"] = started.strftime("%Y-%m-%dT%H:%M:%SZ")
+                  if ended:
+                      timing["callEndedAt"] = ended.strftime("%Y-%m-%dT%H:%M:%SZ")
+                  if started and ended:
+                      timing["durationSeconds"] = str(max(0, int((ended - started).total_seconds())))
+              except Exception as error:  # noqa: BLE001
+                  print(f"Feedback timing lookup failed: {error}")
+          
+              item = {
+                  "contactId": {"S": contact_id},
+                  "submittedAt": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+                  "brainMode": {"S": context.get("brainMode") or "unknown"},
+                  "channelMode": {"S": context.get("channelMode") or "unknown"},
+                  "scenario": {"S": context.get("scenario") or "unknown"},
+                  "policyVersion": {"S": POLICY_VERSION},
+                  "enforcement": {"S": ENFORCEMENT.get(context.get("brainMode") or "", "unknown")},
+              }
+              if context.get("customerName"):
+                  item["customerName"] = {"S": context["customerName"][:50]}
+              for key, value in timing.items():
+                  item[key] = {"N": value} if key == "durationSeconds" else {"S": value}
+              for field, score in ratings.items():
+                  item[field] = {"N": str(score)}
+              if completed:
+                  item["completed"] = {"S": completed}
+              if comment:
+                  item["comment"] = {"S": comment}
+              if tester:
+                  item["testerRole"] = {"S": tester}
+          
+              dynamodb.put_item(TableName=FEEDBACK_TABLE, Item=item)
+          
+              # Public mirror gets the redacted comment; DynamoDB above kept the raw text.
+              issue = _mirror_to_github(contact_id, ratings, completed, _redact_for_public(comment), context, timing)
+              if issue:
+                  try:
+                      dynamodb.update_item(
+                          TableName=FEEDBACK_TABLE,
+                          Key={"contactId": item["contactId"], "submittedAt": item["submittedAt"]},
+                          UpdateExpression="SET githubIssue = :n",
+                          ExpressionAttributeValues={":n": {"N": str(issue)}},
+                      )
+                  except Exception as error:  # noqa: BLE001
+                      print(f"Could not record GitHub issue number: {error}")
+          
+              return _resp(
+                  200,
+                  {
+                      "status": "recorded",
+                      "issue": issue,
+                      "context": {
+                          "brainMode": item["brainMode"]["S"],
+                          "channelMode": item["channelMode"]["S"],
+                          "scenario": item["scenario"]["S"],
+                          "customerName": context.get("customerName") or "",
+                          "callStartedAt": timing.get("callStartedAt", ""),
+                          "durationSeconds": timing.get("durationSeconds", ""),
+                      },
+                  },
+              )
+          
+          
+          def _attributes(body):
+              scenario = str(body.get("scenario", "")).strip().lower()
+              name = str(body.get("name", "")).strip()[:50] or "ลูกค้า"
+              if scenario not in VALID_SCENARIOS:
+                  raise ValueError("scenario must be one of: bank, insurance, broker")
+              defaults = _dynamic_bank_facts() if scenario == "bank" else SCENARIO_DEFAULTS[scenario]
+              return name, {
+                  "scenario": scenario,
+                  "customerName": name,
+                  "amount": defaults["amount"],
+                  "dueDate": defaults["dueDate"],
+                  "channelMode": str(body.get("mode", "pstn"))[:16],
+                  "brainMode": str(body.get("brainMode", "mantle"))[:16],
+              }
+          
+          
+          def _start_webrtc(name, attributes, flow_id, brain_mode):
+              result = connect.start_web_rtc_contact(
+                  InstanceId=INSTANCE_ID,
+                  ContactFlowId=flow_id,
+                  ParticipantDetails={"DisplayName": name},
+                  Attributes=attributes,
+              )
+              return _resp(
+                  200,
+                  {
+                      "mode": "webrtc",
+                      "brainMode": brain_mode,
+                      "contactId": result["ContactId"],
+                      "statusToken": _status_token(result["ContactId"]),
+                      "participantId": result["ParticipantId"],
+                      "participantToken": result["ParticipantToken"],
+                      "connectionData": result["ConnectionData"],
+                  },
+              )
+          
+          
+          def _start_pstn(body, attributes, flow_id, brain_mode):
+              phone = str(body.get("phone", "")).strip().replace(" ", "").replace("-", "")
+              if re.match(r"^0\d{8,9}$", phone):
+                  phone = "+66" + phone[1:]
+              if not PHONE_RE.match(phone):
+                  return _resp(400, {"error": "invalid phone number - Thai (+66) numbers only"})
+              try:
+                  result = connect.start_outbound_voice_contact(
+                      DestinationPhoneNumber=phone,
+                      ContactFlowId=flow_id,
+                      InstanceId=INSTANCE_ID,
+                      SourcePhoneNumber=SOURCE_PHONE,
+                      Attributes=attributes,
+                  )
+              except connect.exceptions.OutboundContactNotPermittedException:
+                  return _resp(403, {"error": "outbound call not permitted to this number"})
+              return _resp(
+                  200,
+                  {
+                      "mode": "pstn",
+                      "brainMode": brain_mode,
+                      "contactId": result["ContactId"],
+                      "statusToken": _status_token(result["ContactId"]),
+                      "message": "calling " + phone,
+                  },
+              )
+          
+          
+          def handler(event, context):
+              headers = {str(key).lower(): str(value) for key, value in (event.get("headers") or {}).items()}
+              supplied_secret = headers.get("x-fsi-origin-key", "")
+              if not ORIGIN_SECRET or not hmac.compare_digest(supplied_secret, ORIGIN_SECRET):
+                  return _resp(403, {"error": "forbidden"})
+          
+              method = (event.get("requestContext", {}).get("http", {}) or {}).get("method", "")
+              if method == "OPTIONS":
+                  return _resp(200, {"ok": True})
+              try:
+                  body = json.loads(event.get("body") or "{}")
+              except json.JSONDecodeError:
+                  return _resp(400, {"error": "invalid JSON"})
+          
+              if str(body.get("action", "")).strip().lower() == "status":
+                  try:
+                      return _contact_status(body)
+                  except ValueError:
+                      return _resp(403, {"error": "invalid status token"})
+                  except Exception as error:  # noqa: BLE001
+                      print(f"Contact status failed: {error}")
+                      return _resp(500, {"error": "failed to read call status"})
+          
+              if str(body.get("action", "")).strip().lower() == "feedback":
+                  try:
+                      return _feedback(body, event)
+                  except ValueError as error:
+                      message = str(error)
+                      if "status token" in message:
+                          return _resp(403, {"error": message})
+                      return _resp(400, {"error": message})
+                  except Exception as error:  # noqa: BLE001
+                      print(f"Feedback save failed: {error}")
+                      return _resp(500, {"error": "failed to save feedback"})
+          
+              mode = str(body.get("mode", "pstn")).strip().lower()
+              if mode not in {"pstn", "webrtc"}:
+                  return _resp(400, {"error": "mode must be pstn or webrtc"})
+              brain_mode = str(body.get("brainMode", "mantle")).strip().lower()
+              if brain_mode not in {"managed", "mantle"}:
+                  return _resp(400, {"error": "brainMode must be managed or mantle"})
+              if brain_mode == "mantle" and (not MANTLE_ENABLED or not MANTLE_CONTACT_FLOW_ID):
+                  return _resp(403, {"error": "mantle dialogue path is not enabled"})
+              flow_id = MANTLE_CONTACT_FLOW_ID if brain_mode == "mantle" else CONTACT_FLOW_ID
+              body["brainMode"] = brain_mode
+              try:
+                  name, attributes = _attributes(body)
+                  if mode == "webrtc":
+                      return _start_webrtc(name, attributes, flow_id, brain_mode)
+                  return _start_pstn(body, attributes, flow_id, brain_mode)
+              except ValueError as error:
+                  return _resp(400, {"error": str(error)})
+              except Exception as error:  # noqa: BLE001
+                  print(f"Start {mode} contact failed: {error}")
+                  return _resp(500, {"error": "failed to start call"})
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: fsi-outbound-demo-api
+      ProtocolType: HTTP
+      Target: !GetAtt TriggerFunction.Arn
+      RouteKey: POST /call
+      CorsConfiguration:
+        AllowOrigins: [ '*' ]
+        AllowMethods: [ POST, OPTIONS ]
+        AllowHeaders: [ Content-Type ]
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TriggerFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  # ── Web hosting (private S3 + CloudFront OAC) ────────────────────────
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub fsi-outbound-demo-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+
+  Oac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub fsi-demo-oac-${AWS::AccountId}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: FSI outbound demo site
+        Enabled: true
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: s3-origin
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !Ref Oac
+            S3OriginConfig: { OriginAccessIdentity: '' }
+          - Id: api-origin
+            DomainName: !Sub '${HttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [ TLSv1.2 ]
+            OriginCustomHeaders:
+              - HeaderName: X-FSI-Origin-Key
+                HeaderValue: !Ref ApiOriginSecret
+        DefaultCacheBehavior:
+          TargetOriginId: s3-origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          Compress: true
+        CacheBehaviors:
+          - PathPattern: /call
+            TargetOriginId: api-origin
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [ GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE ]
+            CachedMethods: [ GET, HEAD ]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            Compress: true
+        Restrictions:
+          GeoRestriction:
+            RestrictionType: whitelist
+            Locations: [ TH, SG, JP ]
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub '${WebBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+Outputs:
+  ApiEndpoint:
+    Description: CloudFront-only POST endpoint that starts WebRTC or triggers a Thai outbound call
+    Value: !Sub https://${Distribution.DomainName}/call
+  DemoUrl:
+    Description: Customer-facing dual WebRTC/PSTN demo page
+    Value: !Sub https://${Distribution.DomainName}
+  QrPageUrl:
+    Description: Presenter QR page
+    Value: !Sub https://${Distribution.DomainName}/qr.html
+  WebBucketName:
+    Value: !Ref WebBucket
+  AssistantId:
+    Value: !GetAtt Assistant.AssistantId
+  AssistantArn:
+    Value: !GetAtt Assistant.AssistantArn
+  LexBotId:
+    Value: !Ref LexBot
+  ContactFlowArn:
+    Value: !GetAtt ContactFlow.ContactFlowArn
+  SessionContextFunctionName:
+    Value: !Ref SessionContextFunction
+  ConnectInstanceIdOutput:
+    Value: !Ref ConnectInstanceId

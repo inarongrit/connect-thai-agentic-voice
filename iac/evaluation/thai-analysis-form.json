@@ -1,0 +1,239 @@
+{
+  "InstanceId": "__CONNECT_INSTANCE_ID__",
+  "Title": "Thai Self-Service Conversation Analysis",
+  "Description": "Sentiment and customer-signal analysis for Thai agentic-voice self-service contacts.",
+  "Items": [
+    {
+      "Section": {
+        "Title": "Thai conversation analysis",
+        "RefId": "analysis",
+        "Instructions": "Populated automatically from the Contact Lens Thai transcript by the post-contact analyzer.",
+        "Items": [
+          {
+            "Question": {
+              "Title": "Customer sentiment",
+              "RefId": "sentiment",
+              "QuestionType": "SINGLESELECT",
+              "QuestionTypeProperties": {
+                "SingleSelect": {
+                  "Options": [
+                    {
+                      "RefId": "pos",
+                      "Text": "POSITIVE"
+                    },
+                    {
+                      "RefId": "neu",
+                      "Text": "NEUTRAL"
+                    },
+                    {
+                      "RefId": "neg",
+                      "Text": "NEGATIVE"
+                    },
+                    {
+                      "RefId": "mix",
+                      "Text": "MIXED"
+                    }
+                  ],
+                  "DisplayAs": "DROPDOWN"
+                }
+              },
+              "ScoringConfiguration": {
+                "IsExcludedFromScoring": true
+              }
+            }
+          },
+          {
+            "Question": {
+              "Title": "Sentiment confidence (0-100)",
+              "RefId": "sentiment_score",
+              "QuestionType": "NUMERIC",
+              "QuestionTypeProperties": {
+                "Numeric": {
+                  "MinValue": 0,
+                  "MaxValue": 100,
+                  "Options": [
+                    {
+                      "MinValue": 0,
+                      "MaxValue": 100,
+                      "Score": 0
+                    }
+                  ]
+                }
+              },
+              "ScoringConfiguration": {
+                "IsExcludedFromScoring": true
+              }
+            }
+          },
+          {
+            "Question": {
+              "Title": "Primary customer signal",
+              "RefId": "signal",
+              "QuestionType": "SINGLESELECT",
+              "QuestionTypeProperties": {
+                "SingleSelect": {
+                  "Options": [
+                    {
+                      "RefId": "hardship",
+                      "Text": "hardship_financial_difficulty"
+                    },
+                    {
+                      "RefId": "arrangement",
+                      "Text": "payment_arrangement_request"
+                    },
+                    {
+                      "RefId": "dispute",
+                      "Text": "dispute"
+                    },
+                    {
+                      "RefId": "refusal",
+                      "Text": "refusal_to_pay"
+                    },
+                    {
+                      "RefId": "callback",
+                      "Text": "callback_request"
+                    },
+                    {
+                      "RefId": "vulnerability",
+                      "Text": "vulnerability"
+                    },
+                    {
+                      "RefId": "none",
+                      "Text": "none"
+                    }
+                  ],
+                  "DisplayAs": "DROPDOWN"
+                }
+              },
+              "ScoringConfiguration": {
+                "IsExcludedFromScoring": true
+              }
+            }
+          },
+          {
+            "Question": {
+              "Title": "Recommended outcome",
+              "RefId": "recommended_outcome",
+              "QuestionType": "SINGLESELECT",
+              "QuestionTypeProperties": {
+                "SingleSelect": {
+                  "Options": [
+                    {
+                      "RefId": "assistance",
+                      "Text": "payment_assistance_referral"
+                    },
+                    {
+                      "RefId": "partial",
+                      "Text": "partial_payment_proposal"
+                    },
+                    {
+                      "RefId": "deferral",
+                      "Text": "temporary_deferral_request"
+                    },
+                    {
+                      "RefId": "commitment",
+                      "Text": "payment_commitment"
+                    },
+                    {
+                      "RefId": "declined",
+                      "Text": "declined"
+                    },
+                    {
+                      "RefId": "cb",
+                      "Text": "callback"
+                    },
+                    {
+                      "RefId": "disp",
+                      "Text": "dispute"
+                    },
+                    {
+                      "RefId": "human",
+                      "Text": "human_transfer"
+                    }
+                  ],
+                  "DisplayAs": "DROPDOWN"
+                }
+              },
+              "ScoringConfiguration": {
+                "IsExcludedFromScoring": true
+              }
+            }
+          },
+          {
+            "Question": {
+              "Title": "Did the agent handle the customer signal correctly?",
+              "RefId": "signal_handled",
+              "QuestionType": "SINGLESELECT",
+              "QuestionTypeProperties": {
+                "SingleSelect": {
+                  "Options": [
+                    {
+                      "RefId": "yes",
+                      "Text": "Yes",
+                      "Score": 10
+                    },
+                    {
+                      "RefId": "partial",
+                      "Text": "Partially",
+                      "Score": 5
+                    },
+                    {
+                      "RefId": "no",
+                      "Text": "No",
+                      "Score": 0,
+                      "AutomaticFail": true
+                    }
+                  ],
+                  "DisplayAs": "DROPDOWN"
+                }
+              },
+              "Instructions": "An unhandled hardship or vulnerability signal is an automatic fail."
+            }
+          },
+          {
+            "Question": {
+              "Title": "Did the agent repeat a question without progress?",
+              "RefId": "no_progress_loop",
+              "QuestionType": "SINGLESELECT",
+              "QuestionTypeProperties": {
+                "SingleSelect": {
+                  "Options": [
+                    {
+                      "RefId": "no",
+                      "Text": "No",
+                      "Score": 10
+                    },
+                    {
+                      "RefId": "yes",
+                      "Text": "Yes - repeated the same question",
+                      "Score": 0
+                    }
+                  ],
+                  "DisplayAs": "DROPDOWN"
+                }
+              }
+            }
+          },
+          {
+            "Question": {
+              "Title": "Analysis rationale (Thai)",
+              "RefId": "rationale_th",
+              "QuestionType": "TEXT",
+              "ScoringConfiguration": {
+                "IsExcludedFromScoring": true
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "ScoringStrategy": {
+    "Mode": "QUESTION_ONLY",
+    "Status": "ENABLED"
+  },
+  "TargetConfiguration": {
+    "ContactInteractionType": "AUTOMATED"
+  },
+  "_EvaluationFormId": "ebbc97ce-a98e-4277-9e74-f00e8f53c6ed"
+}

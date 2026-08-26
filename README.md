@@ -1,0 +1,121 @@
+# Thai Agentic Voice for Financial Services on Amazon Connect
+
+A working demonstration that Amazon Connect can hold a useful, compliant,
+**Thai-language** voice conversation for financial services — driven by an AI
+agent, with market-conduct guardrails a regulated institution would recognise,
+and with evidence produced after every call.
+
+> Demonstration only. Every customer fact is synthetic and the only speech is the
+> demo owner's own test calls. Read [SECURITY.md](SECURITY.md) before pointing it
+> at anything real — Thai PII redaction is unsolved.
+
+## What it does
+
+Three outbound financial-services scenarios, each reachable from a browser over
+WebRTC or as a real phone call to a Thai number:
+
+| Scenario | Behaviour |
+|---|---|
+| **Loan collection** | Verifies identity before disclosing anything, offers full / partial / instalment, reads the amount back in spoken Thai, commits only on explicit confirmation |
+| **Insurance** | Discovers one coverage need and the customer's own priority, shares one approved fact, then asks permission for a licensed-agent handoff |
+| **Brokerage** | Discovers learning topic and experience before offering a tailored seminar or a licensed consultation — generic interest never books or closes |
+
+## What makes it more than a phone chatbot
+
+- **Conduct guardrails outrank the objective.** Hardship, vulnerability,
+  complaint and do-not-contact are detected with deterministic Thai patterns —
+  not left to model judgement — and handled before the sales or collection goal.
+- **Grounded, not improvised.** Dynamic wording may only use an enumerated set of
+  approved facts plus the customer's own words. No invented product, price,
+  market claim, or suitability judgement.
+- **Nothing is committed unheard.** Dates and amounts are read back verbatim in
+  Thai and require explicit confirmation.
+- **Evidence after every call.** Thai transcript, sentiment and rationale, a
+  scored evaluation, and an alert carrying the Contact ID so any call can be
+  audited back to source.
+- **Cost is measured, not guessed.** `tools/cost_per_call.py` derives per-call
+  cost from this account's metered usage and prints its provenance.
+
+## Repository layout
+
+```
+web/          Tester-facing site: landing page, PSTN status page, presenter QR,
+              shared feedback and cost-estimate assets. Single source of truth —
+              post-deploy.sh uploads from here.
+lambda/       Call trigger/API, Q in Connect session context, dialogue engine,
+              Thai post-contact analyzer.
+iac/          CloudFormation templates, Q in Connect prompts, contact flow JSON,
+              evaluation form, post-deploy.sh.
+tests/        Regression suite. Every behavioural claim in this repo is pinned here.
+tools/        cost_per_call.py (cost model), publish_gate.py (blocking publish gate).
+docs/         Implementation notes and the AI-DLC reverse-Inception record.
+```
+
+## Quick start
+
+Prerequisites: an existing Amazon Connect instance with agentic voice available,
+a claimed outbound-capable phone number, and Bedrock model access in the target
+region.
+
+```bash
+# Templates exceed CloudFormation's 51,200-byte inline limit, so stage via S3.
+aws cloudformation deploy \
+  --template-file iac/template.yaml \
+  --stack-name fsi-outbound-demo \
+  --s3-bucket <your-deploy-bucket> \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-west-2 \
+  --parameter-overrides \
+    ConnectInstanceArn=arn:aws:connect:us-west-2:<ACCOUNT_ID>:instance/<INSTANCE_ID> \
+    ConnectInstanceId=<INSTANCE_ID> \
+    SourcePhoneNumber=+15551230000 \
+    ApiOriginSecret=$(openssl rand -hex 32)
+
+# Creates Q in Connect prompts/agents, configures Thai ASR, uploads the site.
+./iac/post-deploy.sh fsi-outbound-demo us-west-2
+
+# Optional: put a custom domain in the presenter QR page instead of the
+# CloudFront hostname.
+DEMO_DOMAIN=demo.example.com ./iac/post-deploy.sh fsi-outbound-demo us-west-2
+```
+
+Full detail, including the Thai capability gaps and their workarounds, is in
+[docs/implementation-notes.md](docs/implementation-notes.md).
+
+## Verify before you publish or deploy
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'   # regression suite
+python3 tools/publish_gate.py                          # blocking publish gate
+python3 tools/cost_per_call.py --show-sources          # rate provenance
+```
+
+CI runs the gate and the suite on every pull request once enabled — copy
+`docs/ci-workflow.yml` to `.github/workflows/ci.yml` to activate it.
+
+## Thai language reality
+
+Amazon Connect supports Thai for agentic voice and transcription, but not for
+several Contact Lens features. This repo documents each gap and the workaround
+used, including the one that is **not** solved:
+
+| Capability | Thai | Approach here |
+|---|---|---|
+| Agentic voice, Advanced ASR, transcript | yes | used directly |
+| Sentiment analysis | no | Bedrock classifies the Thai transcript |
+| Automated evaluations | no | analyzer submits a Connect evaluation |
+| Pattern-match rules | no | deterministic Thai regex in the dialogue layer |
+| **PII redaction** | **no** | **unsolved** — access controls only |
+
+## Method
+
+Built with [AI-DLC](https://github.com/awslabs/aidlc-workflows), applied in
+reverse: the system was built live first and the Inception artifacts
+reconstructed afterwards. What that cost, and the defects it caused, are recorded
+in [docs/aidlc-reverse-inception.md](docs/aidlc-reverse-inception.md). The
+publish-readiness extension under `.aidlc-rule-details/extensions/security/` is
+always enforced and blocking.
+
+## License
+
+MIT-0. See [LICENSE](LICENSE).
