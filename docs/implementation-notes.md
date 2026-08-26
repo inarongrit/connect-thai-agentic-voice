@@ -1428,7 +1428,7 @@ are stack-managed**. The live equivalents exist but carry no
 | `fsi-qic-session-context` | none |
 | `fsi-outbound-demo-trigger` | none |
 | `fsi-thai-post-contact-analyzer` | none |
-| `fsi-outbound-demo-901717345697` (bucket) | none |
+| `fsi-outbound-demo-<ACCOUNT_ID>` (bucket) | none |
 | `fsi-demo-feedback` (table) | none |
 
 Two consequences follow. First, `iac/template.yaml` has never created anything; it
