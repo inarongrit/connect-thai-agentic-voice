@@ -95,13 +95,24 @@ class RepoHygieneTests(unittest.TestCase):
             self.assertIn(entry, body)
 
     def test_operational_snapshots_are_not_publishable(self):
-        """backups/ holds live ARNs and the origin secret; it must stay local."""
-        self.assertTrue((ROOT / "backups").is_dir(), "fixture: backups/ expected locally")
+        """backups/ holds live ARNs and the origin secret; it must stay local.
+
+        Both states are valid and both are asserted here:
+        - a working copy that has `backups/` must not be able to publish it;
+        - a clean clone has no `backups/` at all, which is the proof it was never
+          published. An earlier version of this test required the directory to
+          exist, which passed locally and failed in CI — the one environment that
+          actually represents what a reader receives.
+        """
         published = {str(p.relative_to(ROOT)) for p in GATE.tracked_files()}
         self.assertFalse([p for p in published if p.startswith("backups/")],
                          "backups/ must never be publishable")
         self.assertFalse([p for p in published if "node_modules" in p],
                          "node_modules must never be publishable")
+        if (ROOT / "backups").is_dir():
+            self.assertTrue(subprocess.run(
+                ["git", "check-ignore", "-q", "backups"], cwd=ROOT, timeout=30
+            ).returncode == 0, "backups/ exists but is not ignored")
 
 
 class RedeployabilityTests(unittest.TestCase):
