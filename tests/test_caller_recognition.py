@@ -117,6 +117,26 @@ class CallerRecognitionTests(unittest.TestCase):
         self.assertIn("สมชาย", result["profileGreeting"])
 
 
+    def test_a_named_profile_wins_over_an_automatic_one(self):
+        """Connect creates a nameless profile for every unseen caller.
+
+        A number therefore matches more than one record. Taking the first match found
+        the automatic empty one and reported a known customer as unknown.
+        """
+        automatic = {"FirstName": None, "LastName": None, "Attributes": {}}
+        with patch.object(MODULE.boto3, "client",
+                          return_value=profiles_client([automatic, KNOWN])):
+            result = MODULE.handler(lookup_event(KNOWN_NUMBER), None)
+        self.assertEqual(result["profileFound"], "true")
+        self.assertIn("สมชาย", result["profileGreeting"])
+
+    def test_only_automatic_profiles_means_unknown(self):
+        automatic = {"FirstName": None, "LastName": None, "Attributes": {}}
+        with patch.object(MODULE.boto3, "client",
+                          return_value=profiles_client([automatic])):
+            result = MODULE.handler(lookup_event(KNOWN_NUMBER), None)
+        self.assertEqual(result["profileFound"], "false")
+
 class AccountServicingTests(unittest.TestCase):
     def test_a_balance_question_is_answered_from_the_profile(self):
         """Never from the knowledge base: a general FAQ does not know this account."""
