@@ -21,8 +21,8 @@
       },
       "Transitions": {
         "NextAction": "inbound-analytics",
-        "Errors": [],
-        "Conditions": []
+        "Conditions": [],
+        "Errors": []
       }
     },
     {
@@ -51,8 +51,8 @@
       },
       "Transitions": {
         "NextAction": "inbound-voice",
-        "Errors": [],
-        "Conditions": []
+        "Conditions": [],
+        "Errors": []
       }
     },
     {
@@ -64,13 +64,13 @@
       },
       "Transitions": {
         "NextAction": "inbound-language",
+        "Conditions": [],
         "Errors": [
           {
             "NextAction": "inbound-language",
             "ErrorType": "NoMatchingError"
           }
-        ],
-        "Conditions": []
+        ]
       }
     },
     {
@@ -80,82 +80,104 @@
         "LanguageCode": "th-TH"
       },
       "Transitions": {
+        "NextAction": "inbound-scenario",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "inbound-scenario",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-scenario",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "scenario": "insurance",
+          "customerName": "ผู้ทดลองระบบ",
+          "channel": "inbound"
+        }
+      },
+      "Transitions": {
         "NextAction": "inbound-greeting",
+        "Conditions": [],
         "Errors": [
           {
             "NextAction": "inbound-greeting",
             "ErrorType": "NoMatchingError"
           }
-        ],
-        "Conditions": []
+        ]
       }
     },
     {
       "Identifier": "inbound-greeting",
       "Type": "MessageParticipant",
       "Parameters": {
-        "Text": "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติสำหรับการสาธิตระบบเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลบัญชีในการสาธิตเป็นข้อมูลสมมติค่ะ"
+        "Text": "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติสำหรับการสาธิตระบบเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"
       },
       "Transitions": {
-        "NextAction": "inbound-menu",
+        "NextAction": "inbound-ask",
+        "Conditions": [],
         "Errors": [
           {
-            "NextAction": "inbound-menu",
+            "NextAction": "inbound-ask",
             "ErrorType": "NoMatchingError"
           }
-        ],
-        "Conditions": []
+        ]
       }
     },
     {
-      "Identifier": "inbound-menu",
-      "Type": "GetParticipantInput",
+      "Identifier": "inbound-ask",
+      "Type": "ConnectParticipantWithLexBot",
       "Parameters": {
-        "Text": "กรุณาเลือกบริการที่ต้องการทดลองค่ะ กดหนึ่งสำหรับงานธนาคาร กดสองสำหรับงานประกัน กดสามสำหรับงานหลักทรัพย์ค่ะ",
-        "StoreInput": "False",
-        "InputTimeLimitSeconds": "8"
+        "Text": "สอบถามเรื่องบริการธนาคาร ประกัน หรือหลักทรัพย์ได้เลยค่ะ หากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยนะคะ",
+        "LexV2Bot": {
+          "AliasArn": "${MantleLexAlias.Arn}"
+        },
+        "LexSessionAttributes": {
+          "scenario": "$.Attributes.scenario",
+          "customerName": "$.Attributes.customerName",
+          "mode": "inbound_kb",
+          "mantleState": "{}",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+        }
       },
       "Transitions": {
-        "NextAction": "inbound-menu-fallback",
+        "NextAction": "inbound-route",
         "Errors": [
           {
-            "NextAction": "inbound-menu-fallback",
+            "NextAction": "inbound-error",
             "ErrorType": "NoMatchingError"
           },
           {
-            "NextAction": "inbound-menu-fallback",
+            "NextAction": "inbound-error",
             "ErrorType": "NoMatchingCondition"
           },
           {
-            "NextAction": "inbound-menu-fallback",
+            "NextAction": "inbound-error",
             "ErrorType": "InputTimeLimitExceeded"
           }
         ],
         "Conditions": [
           {
-            "NextAction": "inbound-set-bank",
+            "NextAction": "inbound-route",
             "Condition": {
               "Operator": "Equals",
               "Operands": [
-                "1"
+                "FallbackIntent"
               ]
             }
           },
           {
-            "NextAction": "inbound-set-insurance",
+            "NextAction": "inbound-route",
             "Condition": {
               "Operator": "Equals",
               "Operands": [
-                "2"
-              ]
-            }
-          },
-          {
-            "NextAction": "inbound-set-broker",
-            "Condition": {
-              "Operator": "Equals",
-              "Operands": [
-                "3"
+                "MantleDialogue"
               ]
             }
           }
@@ -163,103 +185,283 @@
       }
     },
     {
-      "Identifier": "inbound-menu-fallback",
-      "Type": "MessageParticipant",
+      "Identifier": "inbound-resume",
+      "Type": "ConnectParticipantWithLexBot",
       "Parameters": {
-        "Text": "ไม่ได้รับการเลือกค่ะ ขอเริ่มด้วยงานประกันนะคะ"
-      },
-      "Transitions": {
-        "NextAction": "inbound-set-insurance",
-        "Errors": [
-          {
-            "NextAction": "inbound-set-insurance",
-            "ErrorType": "NoMatchingError"
-          }
-        ],
-        "Conditions": []
-      }
-    },
-    {
-      "Identifier": "inbound-set-bank",
-      "Type": "UpdateContactAttributes",
-      "Parameters": {
-        "Attributes": {
-          "scenario": "bank",
-          "customerName": "ผู้ทดลองระบบ",
-          "amount": "15,500",
-          "dueDate": "15 สิงหาคม 2569"
+        "Text": "$.Lex.SessionAttributes.nextPrompt",
+        "LexV2Bot": {
+          "AliasArn": "${MantleLexAlias.Arn}"
+        },
+        "LexSessionAttributes": {
+          "scenario": "$.Attributes.scenario",
+          "customerName": "$.Attributes.customerName",
+          "mode": "inbound_kb",
+          "mantleState": "$.Lex.SessionAttributes.mantleState",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
         }
       },
       "Transitions": {
-        "NextAction": "inbound-to-dialogue",
-        "Errors": [
-          {
-            "NextAction": "inbound-to-dialogue",
-            "ErrorType": "NoMatchingError"
-          }
-        ],
-        "Conditions": []
-      }
-    },
-    {
-      "Identifier": "inbound-set-insurance",
-      "Type": "UpdateContactAttributes",
-      "Parameters": {
-        "Attributes": {
-          "scenario": "insurance",
-          "customerName": "ผู้ทดลองระบบ",
-          "amount": "15,500",
-          "dueDate": "15 สิงหาคม 2569"
-        }
-      },
-      "Transitions": {
-        "NextAction": "inbound-to-dialogue",
-        "Errors": [
-          {
-            "NextAction": "inbound-to-dialogue",
-            "ErrorType": "NoMatchingError"
-          }
-        ],
-        "Conditions": []
-      }
-    },
-    {
-      "Identifier": "inbound-set-broker",
-      "Type": "UpdateContactAttributes",
-      "Parameters": {
-        "Attributes": {
-          "scenario": "broker",
-          "customerName": "ผู้ทดลองระบบ",
-          "amount": "15,500",
-          "dueDate": "15 สิงหาคม 2569"
-        }
-      },
-      "Transitions": {
-        "NextAction": "inbound-to-dialogue",
-        "Errors": [
-          {
-            "NextAction": "inbound-to-dialogue",
-            "ErrorType": "NoMatchingError"
-          }
-        ],
-        "Conditions": []
-      }
-    },
-    {
-      "Identifier": "inbound-to-dialogue",
-      "Type": "TransferToFlow",
-      "Parameters": {
-        "ContactFlowId": "${MantleContactFlow.ContactFlowArn}"
-      },
-      "Transitions": {
-        "NextAction": "inbound-error",
+        "NextAction": "inbound-route",
         "Errors": [
           {
             "NextAction": "inbound-error",
             "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "inbound-error",
+            "ErrorType": "NoMatchingCondition"
+          },
+          {
+            "NextAction": "inbound-error",
+            "ErrorType": "InputTimeLimitExceeded"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "inbound-route",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "FallbackIntent"
+              ]
+            }
+          },
+          {
+            "NextAction": "inbound-route",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "MantleDialogue"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-route",
+      "Type": "Compare",
+      "Parameters": {
+        "ComparisonValue": "$.Lex.SessionAttributes.done"
+      },
+      "Transitions": {
+        "NextAction": "inbound-resume",
+        "Errors": [
+          {
+            "NextAction": "inbound-resume",
+            "ErrorType": "NoMatchingCondition"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "inbound-closing",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "true"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-closing",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "$.Lex.SessionAttributes.nextPrompt"
+      },
+      "Transitions": {
+        "NextAction": "inbound-record-outcome",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "inbound-record-outcome",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-record-outcome",
+      "Type": "InvokeLambdaFunction",
+      "Parameters": {
+        "LambdaFunctionARN": "${SessionContextFunctionArn}",
+        "InvocationTimeLimitSeconds": "8",
+        "LambdaInvocationAttributes": {
+          "mode": "outcome",
+          "scenario": "$.Attributes.scenario",
+          "outcomeType": "$.Lex.SessionAttributes.outcomeType",
+          "outcomeDetail": "$.Lex.SessionAttributes.outcomeDetail"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-handoff-branch",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "inbound-handoff-branch",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-handoff-branch",
+      "Type": "Compare",
+      "Parameters": {
+        "ComparisonValue": "$.Lex.SessionAttributes.handoffRequired"
+      },
+      "Transitions": {
+        "NextAction": "inbound-end",
+        "Errors": [
+          {
+            "NextAction": "inbound-end",
+            "ErrorType": "NoMatchingCondition"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "inbound-handoff-attributes",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "true"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-handoff-attributes",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "handoffReason": "$.Lex.SessionAttributes.handoffReason",
+          "handoffSummary": "$.Lex.SessionAttributes.handoffSummary",
+          "outcomeType": "$.Lex.SessionAttributes.outcomeType",
+          "outcomeDetail": "$.Lex.SessionAttributes.outcomeDetail"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-handoff-hooks",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "inbound-handoff-hooks",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-handoff-hooks",
+      "Type": "UpdateContactEventHooks",
+      "Parameters": {
+        "EventHooks": {
+          "CustomerQueue": "${MantleQueueFlow.ContactFlowArn}",
+          "AgentWhisper": "${MantleAgentWhisperFlow.ContactFlowArn}"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-handoff-queue",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "inbound-handoff-queue",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-handoff-queue",
+      "Type": "UpdateContactTargetQueue",
+      "Parameters": {
+        "QueueId": "${HandoffQueueArn}"
+      },
+      "Transitions": {
+        "NextAction": "inbound-handoff-hours",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "inbound-handoff-fallback",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-handoff-hours",
+      "Type": "CheckHoursOfOperation",
+      "Parameters": {},
+      "Transitions": {
+        "NextAction": "inbound-handoff-fallback",
+        "Errors": [
+          {
+            "NextAction": "inbound-handoff-fallback",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "inbound-handoff-transfer",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "True"
+              ]
+            }
+          },
+          {
+            "NextAction": "inbound-handoff-fallback",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "False"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-handoff-transfer",
+      "Type": "TransferContactToQueue",
+      "Parameters": {},
+      "Transitions": {
+        "NextAction": "inbound-end",
+        "Errors": [
+          {
+            "NextAction": "inbound-handoff-fallback",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "inbound-handoff-fallback",
+            "ErrorType": "QueueAtCapacity"
           }
         ],
         "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-handoff-fallback",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสายค่ะ จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "inbound-end",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "inbound-end",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
       }
     },
     {
@@ -270,13 +472,13 @@
       },
       "Transitions": {
         "NextAction": "inbound-end",
+        "Conditions": [],
         "Errors": [
           {
             "NextAction": "inbound-end",
             "ErrorType": "NoMatchingError"
           }
-        ],
-        "Conditions": []
+        ]
       }
     },
     {

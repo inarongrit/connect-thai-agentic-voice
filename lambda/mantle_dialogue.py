@@ -1,5 +1,6 @@
 """Feature-flagged Thai dialogue engine using GPT-5.6 on Amazon Bedrock."""
 import json
+import uuid
 import os
 import re
 import time
@@ -129,6 +130,139 @@ SCENARIO_TH = {"bank": "ธนาคาร", "insurance": "ประกัน", 
 # transfer and never a callback -- the callback wording belongs to the fallback
 # branch that runs only when nobody is staffed.
 HANDOFF_HOLD_TH = "ขอโอนสายให้เจ้าหน้าที่ดูแลต่อนะคะ กรุณาถือสายรอสักครู่ค่ะ"
+
+# --- Inbound knowledge base answering ---------------------------------------
+# Inbound callers ask questions; the outbound dialogue answers none of them. This
+# mode retrieves from the Thai knowledge base and speaks a grounded answer, falling
+# back to the same human handoff when it cannot answer.
+INBOUND_KB_MODE = "inbound_kb"
+QCONNECT_ASSISTANT_ID = os.environ.get("QCONNECT_ASSISTANT_ID", "")
+
+# Retrieval returns whole documents, and an off-topic question still matches
+# something: "what is the weather today" scored 0.426 against the securities FAQ,
+# while genuine questions scored 0.63 to 0.70. Below this floor the honest answer is
+# that we do not know, which is what the handoff is for.
+KB_SCORE_FLOOR = float(os.environ.get("KB_SCORE_FLOOR", "0.55"))
+
+# Thai is written without spaces between words, so word tokenisation would need a
+# dictionary. Character trigrams need none and are enough to pick the right section
+# of a document, which is the only judgement being made here.
+#
+# Deliberately not used to judge relevance. Measured against the real content,
+# on-topic questions scored 0.143 to 1.000 and off-topic ones 0.100 to 0.200, so the
+# two ranges overlap and any threshold would reject real answers. Relevance is the
+# retrieval score's job, where the separation is clean; trigrams only choose which
+# section of an already-relevant document to read out.
+_TRIGRAM_SIZE = 3
+KB_ANSWER_LIMIT = 260
+
+KB_NO_ANSWER_TH = ("ขออภัยค่ะ ดิฉันยังไม่มีข้อมูลเรื่องนี้ "
+                   "ขอโอนสายให้เจ้าหน้าที่ช่วยดูแลนะคะ")
+KB_INVITE_TH = "สอบถามเรื่องอื่นได้อีกนะคะ หรือหากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยค่ะ"
+
+
+def _trigrams(text):
+    compact = re.sub(r"\s+", "", text or "")
+    return {compact[i:i + _TRIGRAM_SIZE]
+            for i in range(max(0, len(compact) - _TRIGRAM_SIZE + 1))}
+
+
+def _overlap(question, candidate):
+    """Fraction of the question's trigrams that appear in the candidate."""
+    asked = _trigrams(question)
+    if not asked:
+        return 0.0
+    return len(asked & _trigrams(candidate)) / len(asked)
+
+
+def _kb_sections(excerpt):
+    """Split a retrieved document back into its headed sections.
+
+    The excerpt collapses the blank lines that separated sections into runs of
+    whitespace, so those runs are the only structure left to split on.
+    """
+    parts = [part.strip() for part in re.split(r"\s{2,}", excerpt or "") if part.strip()]
+    return [part for part in parts if len(part) > 40]
+
+
+def _best_section(question, excerpt):
+    """Pick the section that actually answers the question, not the whole document.
+
+    Speaking an entire FAQ aloud would bury the answer, so the caller hears one
+    section. Returning None means nothing in the document is relevant even though the
+    document itself scored above the floor.
+    """
+    ranked = sorted(((_overlap(question, section), section)
+                     for section in _kb_sections(excerpt)), reverse=True)
+    if not ranked or ranked[0][0] <= 0:
+        return None
+    return ranked[0][1]
+
+
+def _kb_lookup(question, session_id):
+    """Query the assistant. Returns (answer, citation, session_id) or (None, None, sid)."""
+    if not QCONNECT_ASSISTANT_ID:
+        return None, None, session_id
+    client = boto3.client("qconnect", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+    try:
+        if not session_id:
+            session_id = client.create_session(
+                assistantId=QCONNECT_ASSISTANT_ID,
+                name=f"inbound-{uuid.uuid4().hex[:12]}")["session"]["sessionId"]
+        results = client.query_assistant(assistantId=QCONNECT_ASSISTANT_ID,
+                                         sessionId=session_id,
+                                         queryText=question,
+                                         maxResults=1).get("results", [])
+    except Exception as exc:
+        # Swallowing this silently made a permissions failure look like an empty
+        # knowledge base: the caller heard "I have no information" and was escalated,
+        # while the cause was invisible. The caller still gets the handoff, but the
+        # reason is now recoverable from the log.
+        print(f"kb lookup failed: {type(exc).__name__}: {exc}")
+        return None, None, session_id
+    if not results or (results[0].get("relevanceScore") or 0) < KB_SCORE_FLOOR:
+        return None, None, session_id
+    document = results[0].get("document", {})
+    excerpt = (document.get("excerpt") or {}).get("text", "")
+    section = _best_section(question, excerpt)
+    if not section:
+        return None, None, session_id
+    citation = (document.get("title") or {}).get("text", "")
+    return _compact(section, KB_ANSWER_LIMIT), citation, session_id
+
+
+def _handle_inbound_kb(state, transcript):
+    """Answer an inbound question from the knowledge base, or fetch a person."""
+    if _classify_wants_human(transcript):
+        return _complete(state, "human_transfer", "รับทราบค่ะ " + HANDOFF_HOLD_TH)
+
+    answer, citation, session_id = _kb_lookup(transcript, state.get("kbSessionId"))
+    state["kbSessionId"] = session_id
+    if not answer:
+        # Escalating is the honest response to a question we cannot ground, and it
+        # reuses the handoff rather than inventing an answer.
+        state["outcomeDetail"] = f"kb miss: {_compact(transcript, 120)}"
+        return _complete(state, "unresolved_needs_human", KB_NO_ANSWER_TH)
+
+    state["kbAnswers"] = state.get("kbAnswers", 0) + 1
+    spoken = f"{answer} อ้างอิงจาก{citation}ค่ะ" if citation else answer
+    return {"done": False, "message": f"{spoken} {KB_INVITE_TH}"}
+
+
+HUMAN_REQUEST_RE = re.compile(
+    r"เจ้าหน้าที่|พนักงาน|คนจริง|คุยกับคน|ติดต่อคน|ขอสาย|โอนสาย|ผู้ดูแล"
+)
+
+
+def _classify_wants_human(transcript):
+    """Deterministic check, before spending a retrieval call on the question.
+
+    The outbound path reaches this intent through the model classifier; inbound asks
+    the question directly, and someone who says "I want to speak to a person" should
+    not first be read an FAQ.
+    """
+    return bool(HUMAN_REQUEST_RE.search(_despace(_compact(transcript, 200))))
+
 
 ALLOWED_INTENTS = {
     "bank": {"dispute", "declined", "callback", "human", "unknown"} | SHARED_SIGNAL_INTENTS,
@@ -1101,6 +1235,28 @@ def handler(event, context):
         scenario = "insurance"
     transcript = _compact(event.get("inputTranscript"), 240)
     state = _load_state(attributes, scenario)
+
+    # Inbound callers ask questions, so they take the knowledge base path rather than
+    # the outbound script. Dispatched here, before any slot filling, because none of
+    # the outbound stages apply to someone who dialled in with a question.
+    if str(attributes.get("mode", "")).lower() == INBOUND_KB_MODE:
+        result = _handle_inbound_kb(state, transcript)
+        state["lastModel"] = "knowledge-base"
+        state["lastLatencyMs"] = 0
+        return _lex_response(event, {key: str(value) for key, value in {
+            **attributes,
+            "mantleState": json.dumps(state, ensure_ascii=False, separators=(",", ":")),
+            "nextPrompt": _compact(result["message"], 300),
+            "done": "true" if result.get("done") else "false",
+            "modelUsed": "knowledge-base",
+            "modelLatencyMs": "0",
+            "outcomeType": result.get("outcomeType", "pending"),
+            "outcomeDetail": result.get("outcomeDetail", ""),
+            "handoffRequired": result.get("handoffRequired", "false"),
+            "handoffReason": result.get("handoffReason", ""),
+            "handoffSummary": result.get("handoffSummary", ""),
+            "kbAnswers": state.get("kbAnswers", 0),
+        }.items()})
     state["turn"] += 1
     pending_result = _handle_pending(state, transcript)
     classified = {"intent": "unknown", "message": "", "rawValue": "", "model": "deterministic", "latencyMs": 0}

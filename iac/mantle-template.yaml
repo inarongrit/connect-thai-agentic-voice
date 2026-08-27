@@ -10,6 +10,13 @@ Parameters:
   SessionContextFunctionArn:
     Type: String
     AllowedPattern: ^arn:aws:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9-_]+$
+  QConnectAssistantId:
+    Type: String
+    Description: >-
+      Amazon Q in Connect assistant used to answer inbound questions from the Thai
+      knowledge base. Supplied at deploy time; the assistant itself was created
+      outside CloudFormation and is not managed by this stack.
+    AllowedPattern: ^[a-f0-9-]{36}$
   HoldPromptArn:
     Type: String
     Description: >-
@@ -36,6 +43,22 @@ Resources:
             Principal: { Service: lambda.amazonaws.com }
             Action: sts:AssumeRole
       Policies:
+        - PolicyName: QConnectKnowledgeBaseRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - wisdom:QueryAssistant
+                  - wisdom:CreateSession
+                  - wisdom:GetSession
+                Resource:
+                  # CreateSession authorises against the assistant ARN with a
+                  # trailing wildcard -- sessions are children of the assistant, not a
+                  # separate top-level resource. Guessing session/<id>/* produced an
+                  # AccessDenied that the code reported as an empty knowledge base.
+                  - !Sub arn:${AWS::Partition}:wisdom:${AWS::Region}:${AWS::AccountId}:assistant/${QConnectAssistantId}
+                  - !Sub arn:${AWS::Partition}:wisdom:${AWS::Region}:${AWS::AccountId}:assistant/${QConnectAssistantId}/*
         - PolicyName: BedrockLunaTerraAndLogs
           PolicyDocument:
             Version: '2012-10-17'
@@ -66,10 +89,16 @@ Resources:
           LUNA_MODEL_ID: us.openai.gpt-5.6-luna
           TERRA_MODEL_ID: us.openai.gpt-5.6-terra
           MAX_TURNS: '10'
+          QCONNECT_ASSISTANT_ID: !Ref QConnectAssistantId
+          # Off-topic questions still retrieve a document -- an unrelated question
+          # scored 0.426 against the securities FAQ while real ones scored 0.63 to
+          # 0.70 -- so answers below this are escalated instead of spoken.
+          KB_SCORE_FLOOR: '0.55'
       Code:
         ZipFile: |
           """Feature-flagged Thai dialogue engine using GPT-5.6 on Amazon Bedrock."""
           import json
+          import uuid
           import os
           import re
           import time
@@ -199,6 +228,139 @@ Resources:
           # transfer and never a callback -- the callback wording belongs to the fallback
           # branch that runs only when nobody is staffed.
           HANDOFF_HOLD_TH = "ขอโอนสายให้เจ้าหน้าที่ดูแลต่อนะคะ กรุณาถือสายรอสักครู่ค่ะ"
+
+          # --- Inbound knowledge base answering ---------------------------------------
+          # Inbound callers ask questions; the outbound dialogue answers none of them. This
+          # mode retrieves from the Thai knowledge base and speaks a grounded answer, falling
+          # back to the same human handoff when it cannot answer.
+          INBOUND_KB_MODE = "inbound_kb"
+          QCONNECT_ASSISTANT_ID = os.environ.get("QCONNECT_ASSISTANT_ID", "")
+
+          # Retrieval returns whole documents, and an off-topic question still matches
+          # something: "what is the weather today" scored 0.426 against the securities FAQ,
+          # while genuine questions scored 0.63 to 0.70. Below this floor the honest answer is
+          # that we do not know, which is what the handoff is for.
+          KB_SCORE_FLOOR = float(os.environ.get("KB_SCORE_FLOOR", "0.55"))
+
+          # Thai is written without spaces between words, so word tokenisation would need a
+          # dictionary. Character trigrams need none and are enough to pick the right section
+          # of a document, which is the only judgement being made here.
+          #
+          # Deliberately not used to judge relevance. Measured against the real content,
+          # on-topic questions scored 0.143 to 1.000 and off-topic ones 0.100 to 0.200, so the
+          # two ranges overlap and any threshold would reject real answers. Relevance is the
+          # retrieval score's job, where the separation is clean; trigrams only choose which
+          # section of an already-relevant document to read out.
+          _TRIGRAM_SIZE = 3
+          KB_ANSWER_LIMIT = 260
+
+          KB_NO_ANSWER_TH = ("ขออภัยค่ะ ดิฉันยังไม่มีข้อมูลเรื่องนี้ "
+                             "ขอโอนสายให้เจ้าหน้าที่ช่วยดูแลนะคะ")
+          KB_INVITE_TH = "สอบถามเรื่องอื่นได้อีกนะคะ หรือหากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยค่ะ"
+
+
+          def _trigrams(text):
+              compact = re.sub(r"\s+", "", text or "")
+              return {compact[i:i + _TRIGRAM_SIZE]
+                      for i in range(max(0, len(compact) - _TRIGRAM_SIZE + 1))}
+
+
+          def _overlap(question, candidate):
+              """Fraction of the question's trigrams that appear in the candidate."""
+              asked = _trigrams(question)
+              if not asked:
+                  return 0.0
+              return len(asked & _trigrams(candidate)) / len(asked)
+
+
+          def _kb_sections(excerpt):
+              """Split a retrieved document back into its headed sections.
+
+              The excerpt collapses the blank lines that separated sections into runs of
+              whitespace, so those runs are the only structure left to split on.
+              """
+              parts = [part.strip() for part in re.split(r"\s{2,}", excerpt or "") if part.strip()]
+              return [part for part in parts if len(part) > 40]
+
+
+          def _best_section(question, excerpt):
+              """Pick the section that actually answers the question, not the whole document.
+
+              Speaking an entire FAQ aloud would bury the answer, so the caller hears one
+              section. Returning None means nothing in the document is relevant even though the
+              document itself scored above the floor.
+              """
+              ranked = sorted(((_overlap(question, section), section)
+                               for section in _kb_sections(excerpt)), reverse=True)
+              if not ranked or ranked[0][0] <= 0:
+                  return None
+              return ranked[0][1]
+
+
+          def _kb_lookup(question, session_id):
+              """Query the assistant. Returns (answer, citation, session_id) or (None, None, sid)."""
+              if not QCONNECT_ASSISTANT_ID:
+                  return None, None, session_id
+              client = boto3.client("qconnect", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+              try:
+                  if not session_id:
+                      session_id = client.create_session(
+                          assistantId=QCONNECT_ASSISTANT_ID,
+                          name=f"inbound-{uuid.uuid4().hex[:12]}")["session"]["sessionId"]
+                  results = client.query_assistant(assistantId=QCONNECT_ASSISTANT_ID,
+                                                   sessionId=session_id,
+                                                   queryText=question,
+                                                   maxResults=1).get("results", [])
+              except Exception as exc:
+                  # Swallowing this silently made a permissions failure look like an empty
+                  # knowledge base: the caller heard "I have no information" and was escalated,
+                  # while the cause was invisible. The caller still gets the handoff, but the
+                  # reason is now recoverable from the log.
+                  print(f"kb lookup failed: {type(exc).__name__}: {exc}")
+                  return None, None, session_id
+              if not results or (results[0].get("relevanceScore") or 0) < KB_SCORE_FLOOR:
+                  return None, None, session_id
+              document = results[0].get("document", {})
+              excerpt = (document.get("excerpt") or {}).get("text", "")
+              section = _best_section(question, excerpt)
+              if not section:
+                  return None, None, session_id
+              citation = (document.get("title") or {}).get("text", "")
+              return _compact(section, KB_ANSWER_LIMIT), citation, session_id
+
+
+          def _handle_inbound_kb(state, transcript):
+              """Answer an inbound question from the knowledge base, or fetch a person."""
+              if _classify_wants_human(transcript):
+                  return _complete(state, "human_transfer", "รับทราบค่ะ " + HANDOFF_HOLD_TH)
+
+              answer, citation, session_id = _kb_lookup(transcript, state.get("kbSessionId"))
+              state["kbSessionId"] = session_id
+              if not answer:
+                  # Escalating is the honest response to a question we cannot ground, and it
+                  # reuses the handoff rather than inventing an answer.
+                  state["outcomeDetail"] = f"kb miss: {_compact(transcript, 120)}"
+                  return _complete(state, "unresolved_needs_human", KB_NO_ANSWER_TH)
+
+              state["kbAnswers"] = state.get("kbAnswers", 0) + 1
+              spoken = f"{answer} อ้างอิงจาก{citation}ค่ะ" if citation else answer
+              return {"done": False, "message": f"{spoken} {KB_INVITE_TH}"}
+
+
+          HUMAN_REQUEST_RE = re.compile(
+              r"เจ้าหน้าที่|พนักงาน|คนจริง|คุยกับคน|ติดต่อคน|ขอสาย|โอนสาย|ผู้ดูแล"
+          )
+
+
+          def _classify_wants_human(transcript):
+              """Deterministic check, before spending a retrieval call on the question.
+
+              The outbound path reaches this intent through the model classifier; inbound asks
+              the question directly, and someone who says "I want to speak to a person" should
+              not first be read an FAQ.
+              """
+              return bool(HUMAN_REQUEST_RE.search(_despace(_compact(transcript, 200))))
+
 
           ALLOWED_INTENTS = {
               "bank": {"dispute", "declined", "callback", "human", "unknown"} | SHARED_SIGNAL_INTENTS,
@@ -1171,6 +1333,28 @@ Resources:
                   scenario = "insurance"
               transcript = _compact(event.get("inputTranscript"), 240)
               state = _load_state(attributes, scenario)
+
+              # Inbound callers ask questions, so they take the knowledge base path rather than
+              # the outbound script. Dispatched here, before any slot filling, because none of
+              # the outbound stages apply to someone who dialled in with a question.
+              if str(attributes.get("mode", "")).lower() == INBOUND_KB_MODE:
+                  result = _handle_inbound_kb(state, transcript)
+                  state["lastModel"] = "knowledge-base"
+                  state["lastLatencyMs"] = 0
+                  return _lex_response(event, {key: str(value) for key, value in {
+                      **attributes,
+                      "mantleState": json.dumps(state, ensure_ascii=False, separators=(",", ":")),
+                      "nextPrompt": _compact(result["message"], 300),
+                      "done": "true" if result.get("done") else "false",
+                      "modelUsed": "knowledge-base",
+                      "modelLatencyMs": "0",
+                      "outcomeType": result.get("outcomeType", "pending"),
+                      "outcomeDetail": result.get("outcomeDetail", ""),
+                      "handoffRequired": result.get("handoffRequired", "false"),
+                      "handoffReason": result.get("handoffReason", ""),
+                      "handoffSummary": result.get("handoffSummary", ""),
+                      "kbAnswers": state.get("kbAnswers", 0),
+                  }.items()})
               state["turn"] += 1
               pending_result = _handle_pending(state, transcript)
               classified = {"intent": "unknown", "message": "", "rawValue": "", "model": "deterministic", "latencyMs": 0}
@@ -1388,7 +1572,7 @@ Resources:
       InstanceArn: !Ref ConnectInstanceArn
       Type: CONTACT_FLOW
       Content: !Sub |
-        {"Version":"2019-10-30","StartAction":"inbound-logging","Metadata":{"entryPointPosition":{"x":20,"y":20},"snapToGrid":false,"name":"FSI Mantle Inbound Thai","type":"contactFlow","status":"published","ActionMetadata":{}},"Actions":[{"Identifier":"inbound-logging","Type":"UpdateFlowLoggingBehavior","Parameters":{"FlowLoggingBehavior":"Enabled"},"Transitions":{"NextAction":"inbound-analytics","Errors":[],"Conditions":[]}},{"Identifier":"inbound-analytics","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"},"AnalyticsBehavior":{"Enabled":"True","AnalyticsLanguage":"th-TH","ChannelConfiguration":{"Voice":{"AnalyticsModes":["PostContact","AutomatedInteraction"]}}}},"Transitions":{"NextAction":"inbound-voice","Errors":[],"Conditions":[]}},{"Identifier":"inbound-voice","Type":"UpdateContactTextToSpeechVoice","Parameters":{"TextToSpeechVoice":"SUDA","TextToSpeechEngine":"connect:agentic"},"Transitions":{"NextAction":"inbound-language","Errors":[{"NextAction":"inbound-language","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-language","Type":"UpdateContactData","Parameters":{"LanguageCode":"th-TH"},"Transitions":{"NextAction":"inbound-greeting","Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-greeting","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติสำหรับการสาธิตระบบเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลบัญชีในการสาธิตเป็นข้อมูลสมมติค่ะ"},"Transitions":{"NextAction":"inbound-menu","Errors":[{"NextAction":"inbound-menu","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-menu","Type":"GetParticipantInput","Parameters":{"Text":"กรุณาเลือกบริการที่ต้องการทดลองค่ะ กดหนึ่งสำหรับงานธนาคาร กดสองสำหรับงานประกัน กดสามสำหรับงานหลักทรัพย์ค่ะ","StoreInput":"False","InputTimeLimitSeconds":"8"},"Transitions":{"NextAction":"inbound-menu-fallback","Errors":[{"NextAction":"inbound-menu-fallback","ErrorType":"NoMatchingError"},{"NextAction":"inbound-menu-fallback","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-menu-fallback","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-set-bank","Condition":{"Operator":"Equals","Operands":["1"]}},{"NextAction":"inbound-set-insurance","Condition":{"Operator":"Equals","Operands":["2"]}},{"NextAction":"inbound-set-broker","Condition":{"Operator":"Equals","Operands":["3"]}}]}},{"Identifier":"inbound-menu-fallback","Type":"MessageParticipant","Parameters":{"Text":"ไม่ได้รับการเลือกค่ะ ขอเริ่มด้วยงานประกันนะคะ"},"Transitions":{"NextAction":"inbound-set-insurance","Errors":[{"NextAction":"inbound-set-insurance","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-set-bank","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"scenario":"bank","customerName":"ผู้ทดลองระบบ","amount":"15,500","dueDate":"15 สิงหาคม 2569"}},"Transitions":{"NextAction":"inbound-to-dialogue","Errors":[{"NextAction":"inbound-to-dialogue","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-set-insurance","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"scenario":"insurance","customerName":"ผู้ทดลองระบบ","amount":"15,500","dueDate":"15 สิงหาคม 2569"}},"Transitions":{"NextAction":"inbound-to-dialogue","Errors":[{"NextAction":"inbound-to-dialogue","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-set-broker","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"scenario":"broker","customerName":"ผู้ทดลองระบบ","amount":"15,500","dueDate":"15 สิงหาคม 2569"}},"Transitions":{"NextAction":"inbound-to-dialogue","Errors":[{"NextAction":"inbound-to-dialogue","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-to-dialogue","Type":"TransferToFlow","Parameters":{"ContactFlowId":"${MantleContactFlow.ContactFlowArn}"},"Transitions":{"NextAction":"inbound-error","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-error","Type":"MessageParticipant","Parameters":{"Text":"ขออภัยค่ะ ระบบสาธิตยังไม่พร้อมให้บริการ กรุณาลองใหม่ภายหลังค่ะ"},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-end","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}
+        {"Version":"2019-10-30","StartAction":"inbound-logging","Metadata":{"entryPointPosition":{"x":20,"y":20},"snapToGrid":false,"name":"FSI Mantle Inbound Thai","type":"contactFlow","status":"published","ActionMetadata":{}},"Actions":[{"Identifier":"inbound-logging","Type":"UpdateFlowLoggingBehavior","Parameters":{"FlowLoggingBehavior":"Enabled"},"Transitions":{"NextAction":"inbound-analytics","Conditions":[],"Errors":[]}},{"Identifier":"inbound-analytics","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"},"AnalyticsBehavior":{"Enabled":"True","AnalyticsLanguage":"th-TH","ChannelConfiguration":{"Voice":{"AnalyticsModes":["PostContact","AutomatedInteraction"]}}}},"Transitions":{"NextAction":"inbound-voice","Conditions":[],"Errors":[]}},{"Identifier":"inbound-voice","Type":"UpdateContactTextToSpeechVoice","Parameters":{"TextToSpeechVoice":"SUDA","TextToSpeechEngine":"connect:agentic"},"Transitions":{"NextAction":"inbound-language","Conditions":[],"Errors":[{"NextAction":"inbound-language","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-language","Type":"UpdateContactData","Parameters":{"LanguageCode":"th-TH"},"Transitions":{"NextAction":"inbound-scenario","Conditions":[],"Errors":[{"NextAction":"inbound-scenario","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-scenario","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"scenario":"insurance","customerName":"ผู้ทดลองระบบ","channel":"inbound"}},"Transitions":{"NextAction":"inbound-greeting","Conditions":[],"Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-greeting","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติสำหรับการสาธิตระบบเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"},"Transitions":{"NextAction":"inbound-ask","Conditions":[],"Errors":[{"NextAction":"inbound-ask","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-ask","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"สอบถามเรื่องบริการธนาคาร ประกัน หรือหลักทรัพย์ได้เลยค่ะ หากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยนะคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","mode":"inbound_kb","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"inbound-route","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"},{"NextAction":"inbound-error","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-error","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"inbound-resume","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","mode":"inbound_kb","mantleState":"$.Lex.SessionAttributes.mantleState","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"inbound-route","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"},{"NextAction":"inbound-error","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-error","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"inbound-route","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.done"},"Transitions":{"NextAction":"inbound-resume","Errors":[{"NextAction":"inbound-resume","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-closing","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-closing","Type":"MessageParticipant","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt"},"Transitions":{"NextAction":"inbound-record-outcome","Conditions":[],"Errors":[{"NextAction":"inbound-record-outcome","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-record-outcome","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunctionArn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","scenario":"$.Attributes.scenario","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail"}},"Transitions":{"NextAction":"inbound-handoff-branch","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-branch","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.handoffRequired"},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-handoff-attributes","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-handoff-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"handoffReason":"$.Lex.SessionAttributes.handoffReason","handoffSummary":"$.Lex.SessionAttributes.handoffSummary","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail"}},"Transitions":{"NextAction":"inbound-handoff-hooks","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-hooks","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-hooks","Type":"UpdateContactEventHooks","Parameters":{"EventHooks":{"CustomerQueue":"${MantleQueueFlow.ContactFlowArn}","AgentWhisper":"${MantleAgentWhisperFlow.ContactFlowArn}"}},"Transitions":{"NextAction":"inbound-handoff-queue","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-queue","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-queue","Type":"UpdateContactTargetQueue","Parameters":{"QueueId":"${HandoffQueueArn}"},"Transitions":{"NextAction":"inbound-handoff-hours","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-hours","Type":"CheckHoursOfOperation","Parameters":{},"Transitions":{"NextAction":"inbound-handoff-fallback","Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"}],"Conditions":[{"NextAction":"inbound-handoff-transfer","Condition":{"Operator":"Equals","Operands":["True"]}},{"NextAction":"inbound-handoff-fallback","Condition":{"Operator":"Equals","Operands":["False"]}}]}},{"Identifier":"inbound-handoff-transfer","Type":"TransferContactToQueue","Parameters":{},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"},{"NextAction":"inbound-handoff-fallback","ErrorType":"QueueAtCapacity"}],"Conditions":[]}},{"Identifier":"inbound-handoff-fallback","Type":"MessageParticipant","Parameters":{"Text":"ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสายค่ะ จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"},"Transitions":{"NextAction":"inbound-end","Conditions":[],"Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-error","Type":"MessageParticipant","Parameters":{"Text":"ขออภัยค่ะ ระบบสาธิตยังไม่พร้อมให้บริการ กรุณาลองใหม่ภายหลังค่ะ"},"Transitions":{"NextAction":"inbound-end","Conditions":[],"Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-end","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}
 Outputs:
   MantleFunctionName:
     Value: !Ref MantleDialogueFunction

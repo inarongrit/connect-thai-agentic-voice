@@ -180,40 +180,53 @@ class InboundDisclosureTests(unittest.TestCase):
                 for token, description in self.REQUIRED.items():
                     self.assertIn(token, text, f"{source} lacks {description}")
 
-    def test_greeting_precedes_the_menu(self):
-        """Disclosures must come before anything that collects input."""
-        doc = json.loads((IAC / "mantle-inbound-flow.json").read_text())
-        order = [a["Identifier"] for a in doc["Actions"]]
-        actions = {a["Identifier"]: a for a in doc["Actions"]}
-        self.assertLess(order.index("inbound-greeting"), order.index("inbound-menu"))
+    def test_disclosures_precede_the_first_question(self):
+        """Nothing may be collected before the caller knows what they reached."""
+        actions = {a["Identifier"]: a for a in
+                   json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]}
+        order = [a["Identifier"] for a in
+                 json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]]
+        self.assertLess(order.index("inbound-greeting"), order.index("inbound-ask"))
         self.assertEqual(actions["inbound-greeting"]["Transitions"]["NextAction"],
-                         "inbound-menu")
+                         "inbound-ask")
 
-    def test_no_keypress_still_reaches_the_dialogue(self):
-        """A dead end in front of an audience is worse than a default choice."""
+    def test_the_caller_is_asked_an_open_question_not_given_a_menu(self):
+        """The first design replayed the outbound script behind a keypad menu.
+
+        An inbound caller has a question. Making them choose a line of business first,
+        then answering with a collections script, was the wrong shape entirely.
+        """
         actions = {a["Identifier"]: a for a in
                    json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]}
-        menu = actions["inbound-menu"]
-        for error in menu["Transitions"]["Errors"]:
-            self.assertEqual(error["NextAction"], "inbound-menu-fallback")
-        self.assertEqual(actions["inbound-menu-fallback"]["Transitions"]["NextAction"],
-                         "inbound-set-insurance")
+        self.assertNotIn("inbound-menu", actions)
+        self.assertEqual(actions["inbound-ask"]["Type"], "ConnectParticipantWithLexBot")
+        self.assertEqual(
+            actions["inbound-ask"]["Parameters"]["LexSessionAttributes"]["mode"],
+            "inbound_kb", "inbound must use the knowledge base path")
 
-    def test_inbound_reuses_the_outbound_dialogue(self):
-        """One dialogue, one outcome record, one handoff path -- inbound cannot drift."""
+    def test_the_caller_may_ask_more_than_one_question(self):
         actions = {a["Identifier"]: a for a in
                    json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]}
-        transfer = actions["inbound-to-dialogue"]
-        self.assertEqual(transfer["Type"], "TransferToFlow")
-        self.assertEqual(transfer["Parameters"]["ContactFlowId"],
-                         "${MantleContactFlow.ContactFlowArn}")
+        route = actions["inbound-route"]
+        self.assertEqual(route["Transitions"]["NextAction"], "inbound-resume")
+        self.assertEqual(route["Transitions"]["Conditions"][0]["NextAction"],
+                         "inbound-closing")
 
-    def test_every_scenario_can_be_reached(self):
+    def test_a_speech_failure_is_spoken_not_silent(self):
         actions = {a["Identifier"]: a for a in
                    json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]}
-        reached = {actions[f"inbound-set-{s}"]["Parameters"]["Attributes"]["scenario"]
-                   for s in ("bank", "insurance", "broker")}
-        self.assertEqual(reached, {"bank", "insurance", "broker"})
+        for error in actions["inbound-ask"]["Transitions"]["Errors"]:
+            self.assertEqual(error["NextAction"], "inbound-error")
+        self.assertTrue(actions["inbound-error"]["Parameters"]["Text"].strip())
+
+    def test_inbound_records_an_outcome_like_outbound(self):
+        """Inbound calls must appear in the same outcome record as outbound ones."""
+        actions = {a["Identifier"]: a for a in
+                   json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]}
+        record = actions["inbound-record-outcome"]
+        self.assertEqual(record["Type"], "InvokeLambdaFunction")
+        self.assertEqual(record["Parameters"]["LambdaInvocationAttributes"]["mode"],
+                         "outcome")
 
     def test_inbound_speaks_thai_only(self):
         import re

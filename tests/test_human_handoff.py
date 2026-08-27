@@ -341,5 +341,44 @@ class HandoffDeploymentTests(unittest.TestCase):
                                  json.loads((ROOT / "iac" / source).read_text()),
                                  "run python3 tools/sync_inline_lambda.py")
 
+
+class HandoffParityTests(unittest.TestCase):
+    """The inbound flow repeats the handoff chain, so the two must not diverge.
+
+    A shared contact flow module would remove the duplication, but modules do not
+    support queue transfer, so the wiring is repeated deliberately. This test is what
+    makes that safe: the same blocks, in the same order, with the same fallbacks.
+    """
+
+    INBOUND = json.loads((ROOT / "iac" / "mantle-inbound-flow.json").read_text())
+
+    @staticmethod
+    def _chain(flow, prefix):
+        return [a for a in flow["Actions"] if a["Identifier"].startswith(prefix)]
+
+    def test_both_flows_use_the_same_blocks_in_the_same_order(self):
+        outbound = [a["Type"] for a in self._chain(FLOW, "handoff-")]
+        inbound = [a["Type"] for a in self._chain(self.INBOUND, "inbound-handoff-")]
+        self.assertEqual(outbound, inbound)
+
+    def test_both_target_the_same_queue_and_support_flows(self):
+        def params(flow, prefix, suffix):
+            action = {a["Identifier"]: a for a in flow["Actions"]}[prefix + suffix]
+            return action["Parameters"]
+        self.assertEqual(params(FLOW, "handoff-", "set-queue")["QueueId"],
+                         params(self.INBOUND, "inbound-handoff-", "queue")["QueueId"])
+        self.assertEqual(params(FLOW, "handoff-", "set-hooks")["EventHooks"],
+                         params(self.INBOUND, "inbound-handoff-", "hooks")["EventHooks"])
+
+    def test_inbound_failures_also_reach_a_spoken_fallback(self):
+        actions = {a["Identifier"]: a for a in self.INBOUND["Actions"]}
+        for ident in ("inbound-handoff-queue", "inbound-handoff-hours",
+                      "inbound-handoff-transfer"):
+            with self.subTest(action=ident):
+                targets = {e["NextAction"] for e in actions[ident]["Transitions"]["Errors"]}
+                self.assertEqual(targets, {"inbound-handoff-fallback"})
+        self.assertIn("ติดต่อกลับ",
+                      actions["inbound-handoff-fallback"]["Parameters"]["Text"])
+
 if __name__ == "__main__":
     unittest.main()
