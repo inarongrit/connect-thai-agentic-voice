@@ -27,8 +27,15 @@ SPEC = importlib.util.spec_from_file_location("live_transcript",
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
+# Set on the module rather than through the environment. Another test module sets
+# ORIGIN_SECRET before this one loads, so os.environ.setdefault was a no-op and the
+# fixture secret no longer matched what the module had read -- every request came back
+# 403 and the whole suite failed, while this file passed on its own.
+SECRET = "secret-for-tests"
+MODULE.ORIGIN_SECRET = SECRET
 
-def request(secret="secret-for-tests", contact=None):
+
+def request(secret=SECRET, contact=None):
     event = {"headers": {"X-FSI-Origin-Key": secret} if secret else {}}
     if contact:
         event["queryStringParameters"] = {"contactId": contact}
@@ -46,6 +53,10 @@ class AuthorisationTests(unittest.TestCase):
 
     def test_a_wrong_secret_is_refused(self):
         self.assertEqual(MODULE.handler(request(secret="wrong"), None)["statusCode"], 403)
+
+    def test_the_fixture_secret_is_the_one_the_module_uses(self):
+        """Guards the cross-module interference that made this file pass alone."""
+        self.assertEqual(MODULE.ORIGIN_SECRET, SECRET)
 
     def test_no_transcript_is_fetched_when_unauthorised(self):
         """The refusal must come before any call that could read call content."""
