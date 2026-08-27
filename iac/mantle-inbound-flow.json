@@ -1,0 +1,289 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "inbound-logging",
+  "Metadata": {
+    "entryPointPosition": {
+      "x": 20,
+      "y": 20
+    },
+    "snapToGrid": false,
+    "name": "FSI Mantle Inbound Thai",
+    "type": "contactFlow",
+    "status": "published",
+    "ActionMetadata": {}
+  },
+  "Actions": [
+    {
+      "Identifier": "inbound-logging",
+      "Type": "UpdateFlowLoggingBehavior",
+      "Parameters": {
+        "FlowLoggingBehavior": "Enabled"
+      },
+      "Transitions": {
+        "NextAction": "inbound-analytics",
+        "Errors": [],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-analytics",
+      "Type": "UpdateContactRecordingBehavior",
+      "Parameters": {
+        "RecordingBehavior": {
+          "RecordedParticipants": [
+            "Agent",
+            "Customer"
+          ],
+          "IVRRecordingBehavior": "Enabled"
+        },
+        "AnalyticsBehavior": {
+          "Enabled": "True",
+          "AnalyticsLanguage": "th-TH",
+          "ChannelConfiguration": {
+            "Voice": {
+              "AnalyticsModes": [
+                "PostContact",
+                "AutomatedInteraction"
+              ]
+            }
+          }
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-voice",
+        "Errors": [],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-voice",
+      "Type": "UpdateContactTextToSpeechVoice",
+      "Parameters": {
+        "TextToSpeechVoice": "SUDA",
+        "TextToSpeechEngine": "connect:agentic"
+      },
+      "Transitions": {
+        "NextAction": "inbound-language",
+        "Errors": [
+          {
+            "NextAction": "inbound-language",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-language",
+      "Type": "UpdateContactData",
+      "Parameters": {
+        "LanguageCode": "th-TH"
+      },
+      "Transitions": {
+        "NextAction": "inbound-greeting",
+        "Errors": [
+          {
+            "NextAction": "inbound-greeting",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-greeting",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติสำหรับการสาธิตระบบเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลบัญชีในการสาธิตเป็นข้อมูลสมมติค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "inbound-menu",
+        "Errors": [
+          {
+            "NextAction": "inbound-menu",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-menu",
+      "Type": "GetParticipantInput",
+      "Parameters": {
+        "Text": "กรุณาเลือกบริการที่ต้องการทดลองค่ะ กดหนึ่งสำหรับงานธนาคาร กดสองสำหรับงานประกัน กดสามสำหรับงานหลักทรัพย์ค่ะ",
+        "StoreInput": "False",
+        "InputTimeLimitSeconds": "8"
+      },
+      "Transitions": {
+        "NextAction": "inbound-menu-fallback",
+        "Errors": [
+          {
+            "NextAction": "inbound-menu-fallback",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "inbound-menu-fallback",
+            "ErrorType": "NoMatchingCondition"
+          },
+          {
+            "NextAction": "inbound-menu-fallback",
+            "ErrorType": "InputTimeLimitExceeded"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "inbound-set-bank",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "1"
+              ]
+            }
+          },
+          {
+            "NextAction": "inbound-set-insurance",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "2"
+              ]
+            }
+          },
+          {
+            "NextAction": "inbound-set-broker",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "3"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-menu-fallback",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "ไม่ได้รับการเลือกค่ะ ขอเริ่มด้วยงานประกันนะคะ"
+      },
+      "Transitions": {
+        "NextAction": "inbound-set-insurance",
+        "Errors": [
+          {
+            "NextAction": "inbound-set-insurance",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-set-bank",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "scenario": "bank",
+          "customerName": "ผู้ทดลองระบบ",
+          "amount": "15,500",
+          "dueDate": "15 สิงหาคม 2569"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-to-dialogue",
+        "Errors": [
+          {
+            "NextAction": "inbound-to-dialogue",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-set-insurance",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "scenario": "insurance",
+          "customerName": "ผู้ทดลองระบบ",
+          "amount": "15,500",
+          "dueDate": "15 สิงหาคม 2569"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-to-dialogue",
+        "Errors": [
+          {
+            "NextAction": "inbound-to-dialogue",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-set-broker",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "scenario": "broker",
+          "customerName": "ผู้ทดลองระบบ",
+          "amount": "15,500",
+          "dueDate": "15 สิงหาคม 2569"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-to-dialogue",
+        "Errors": [
+          {
+            "NextAction": "inbound-to-dialogue",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-to-dialogue",
+      "Type": "TransferToFlow",
+      "Parameters": {
+        "ContactFlowId": "${MantleContactFlow.ContactFlowArn}"
+      },
+      "Transitions": {
+        "NextAction": "inbound-error",
+        "Errors": [
+          {
+            "NextAction": "inbound-error",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-error",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "ขออภัยค่ะ ระบบสาธิตยังไม่พร้อมให้บริการ กรุณาลองใหม่ภายหลังค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "inbound-end",
+        "Errors": [
+          {
+            "NextAction": "inbound-end",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-end",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}

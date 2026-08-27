@@ -47,7 +47,9 @@ FLOW_CASES = (
     ("mantle-template.yaml", "mantle-queue-flow.json",
      "  MantleQueueFlow:", "  MantleContactFlow:"),
     ("mantle-template.yaml", "mantle-flow.json",
-     "  MantleContactFlow:", "Outputs:"),
+     "  MantleContactFlow:", "  MantleInboundFlow:"),
+    ("mantle-template.yaml", "mantle-inbound-flow.json",
+     "  MantleInboundFlow:", "Outputs:"),
 )
 FLOW_PREFIX = "      Content: !Sub |\n"
 FLOW_INDENT = " " * 8

@@ -329,7 +329,8 @@ class HandoffDeploymentTests(unittest.TestCase):
         cases = (("  MantleAgentWhisperFlow:", "  MantleQueueFlow:",
                   "mantle-agent-whisper-flow.json"),
                  ("  MantleQueueFlow:", "  MantleContactFlow:", "mantle-queue-flow.json"),
-                 ("  MantleContactFlow:", "\nOutputs:", "mantle-flow.json"))
+                 ("  MantleContactFlow:", "  MantleInboundFlow:", "mantle-flow.json"),
+                 ("  MantleInboundFlow:", "\nOutputs:", "mantle-inbound-flow.json"))
         for start, following, source in cases:
             with self.subTest(source=source):
                 begin = template.index(start)
@@ -339,22 +340,6 @@ class HandoffDeploymentTests(unittest.TestCase):
                 self.assertEqual(json.loads(template[code:end].strip()),
                                  json.loads((ROOT / "iac" / source).read_text()),
                                  "run python3 tools/sync_inline_lambda.py")
-
-    def test_inline_flow_matches_the_readable_flow(self):
-        """The template is what deploys; the JSON file is what humans review.
-
-        Nothing verified these agreed before, so the reviewed flow and the deployed
-        flow could differ without anything failing.
-        """
-        template = (ROOT / "iac" / "mantle-template.yaml").read_text()
-        begin = template.index("  MantleContactFlow:")
-        prefix = "      Content: !Sub |\n"
-        start = template.index(prefix, begin) + len(prefix)
-        end = template.index("\nOutputs:", start)
-        inline = json.loads(template[start:end].strip())
-        self.assertEqual(inline, FLOW,
-                         "run python3 tools/sync_inline_lambda.py")
-
 
 if __name__ == "__main__":
     unittest.main()
