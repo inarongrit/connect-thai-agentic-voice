@@ -101,21 +101,67 @@
         }
       },
       "Transitions": {
-        "NextAction": "inbound-greeting",
+        "NextAction": "inbound-profile-lookup",
         "Conditions": [],
         "Errors": [
           {
-            "NextAction": "inbound-greeting",
+            "NextAction": "inbound-profile-lookup",
             "ErrorType": "NoMatchingError"
           }
         ]
       }
     },
     {
+      "Identifier": "inbound-profile-lookup",
+      "Type": "InvokeLambdaFunction",
+      "Parameters": {
+        "LambdaFunctionARN": "${MantleDialogueFunction.Arn}",
+        "InvocationTimeLimitSeconds": "8",
+        "LambdaInvocationAttributes": {
+          "mode": "profile_lookup",
+          "callerNumber": "$.CustomerEndpoint.Address"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-profile-attributes",
+        "Errors": [
+          {
+            "NextAction": "inbound-greeting",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-profile-attributes",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "profileFound": "$.External.profileFound",
+          "profileGreeting": "$.External.profileGreeting",
+          "profileSummary": "$.External.profileSummary",
+          "profileFirstName": "$.External.profileFirstName",
+          "profileAmount": "$.External.profileAmount",
+          "profileDueDate": "$.External.profileDueDate"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-greeting",
+        "Errors": [
+          {
+            "NextAction": "inbound-greeting",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
       "Identifier": "inbound-greeting",
       "Type": "MessageParticipant",
       "Parameters": {
-        "Text": "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติสำหรับการสาธิตระบบเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"
+        "Text": "$.Attributes.profileGreeting โทรเข้าระบบสาธิตเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"
       },
       "Transitions": {
         "NextAction": "inbound-ask",
@@ -132,7 +178,7 @@
       "Identifier": "inbound-ask",
       "Type": "ConnectParticipantWithLexBot",
       "Parameters": {
-        "Text": "สอบถามเรื่องบริการธนาคาร ประกัน หรือหลักทรัพย์ได้เลยค่ะ หากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยนะคะ",
+        "Text": "สอบถามเรื่องบริการธนาคาร, ประกัน, หรือหลักทรัพย์ได้เลยค่ะ หากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยนะคะ",
         "LexV2Bot": {
           "AliasArn": "${MantleLexAlias.Arn}"
         },
@@ -143,7 +189,11 @@
           "mantleState": "{}",
           "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
           "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
-          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
+          "profileFound": "$.Attributes.profileFound",
+          "profileAmount": "$.Attributes.profileAmount",
+          "profileDueDate": "$.Attributes.profileDueDate",
+          "profileFirstName": "$.Attributes.profileFirstName"
         }
       },
       "Transitions": {
@@ -199,7 +249,11 @@
           "mantleState": "$.Lex.SessionAttributes.mantleState",
           "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
           "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
-          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
+          "profileFound": "$.Attributes.profileFound",
+          "profileAmount": "$.Attributes.profileAmount",
+          "profileDueDate": "$.Attributes.profileDueDate",
+          "profileFirstName": "$.Attributes.profileFirstName"
         }
       },
       "Transitions": {
@@ -343,7 +397,8 @@
           "handoffReason": "$.Lex.SessionAttributes.handoffReason",
           "handoffSummary": "$.Lex.SessionAttributes.handoffSummary",
           "outcomeType": "$.Lex.SessionAttributes.outcomeType",
-          "outcomeDetail": "$.Lex.SessionAttributes.outcomeDetail"
+          "outcomeDetail": "$.Lex.SessionAttributes.outcomeDetail",
+          "profileSummary": "$.Attributes.profileSummary"
         }
       },
       "Transitions": {

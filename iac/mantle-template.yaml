@@ -10,6 +10,12 @@ Parameters:
   SessionContextFunctionArn:
     Type: String
     AllowedPattern: ^arn:aws:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9-_]+$
+  CustomerProfilesDomain:
+    Type: String
+    Description: >-
+      Customer Profiles domain used to recognise inbound callers by the number they
+      dial from. Created with the Connect instance and not managed by this stack.
+    Default: ''
   QConnectAssistantId:
     Type: String
     Description: >-
@@ -59,6 +65,13 @@ Resources:
                   # AccessDenied that the code reported as an empty knowledge base.
                   - !Sub arn:${AWS::Partition}:wisdom:${AWS::Region}:${AWS::AccountId}:assistant/${QConnectAssistantId}
                   - !Sub arn:${AWS::Partition}:wisdom:${AWS::Region}:${AWS::AccountId}:assistant/${QConnectAssistantId}/*
+        - PolicyName: CustomerProfilesRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: profile:SearchProfiles
+                Resource: !Sub arn:${AWS::Partition}:profile:${AWS::Region}:${AWS::AccountId}:domains/${CustomerProfilesDomain}
         - PolicyName: BedrockLunaTerraAndLogs
           PolicyDocument:
             Version: '2012-10-17'
@@ -94,6 +107,7 @@ Resources:
           # scored 0.426 against the securities FAQ while real ones scored 0.63 to
           # 0.70 -- so answers below this are escalated instead of spoken.
           KB_SCORE_FLOOR: '0.55'
+          PROFILE_DOMAIN: !Ref CustomerProfilesDomain
       Code:
         ZipFile: |
           """Feature-flagged Thai dialogue engine using GPT-5.6 on Amazon Bedrock."""
@@ -209,6 +223,11 @@ Resources:
               "unresolved_needs_human",
               "licensed_rep_referral",
               "affordability_review",
+              # Added when inbound servicing began routing deferral requests to a person. The
+              # outcome already told the caller a person would take over, but it was not in this
+              # set, so the flow would have played the transfer wording and then hung up -- the
+              # same defect as the first handoff deploy, in a different outcome.
+              "payment_assistance_referral",
           })
 
           # Why the agent is receiving this call, in Thai, for the whisper and the CCP.
@@ -219,6 +238,7 @@ Resources:
               "unresolved_needs_human": "ระบบไม่สามารถช่วยได้ ต้องให้เจ้าหน้าที่ดูแล",
               "licensed_rep_referral": "ต้องผู้แนะนำการลงทุนที่ได้รับอนุญาต",
               "affordability_review": "ขอทบทวนความคุ้มครองและค่าเบี้ยที่เหมาะสม",
+              "payment_assistance_referral": "ขอผ่อนผันการชำระ",
           }
 
           SCENARIO_TH = {"bank": "ธนาคาร", "insurance": "ประกัน", "broker": "หลักทรัพย์"}
@@ -256,7 +276,118 @@ Resources:
 
           KB_NO_ANSWER_TH = ("ขออภัยค่ะ ดิฉันยังไม่มีข้อมูลเรื่องนี้ "
                              "ขอโอนสายให้เจ้าหน้าที่ช่วยดูแลนะคะ")
-          KB_INVITE_TH = "สอบถามเรื่องอื่นได้อีกนะคะ หรือหากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยค่ะ"
+          KB_INVITE_TH = "สอบถามเรื่องอื่นได้อีกนะคะ, หรือหากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยค่ะ"
+
+          # --- Caller recognition and account servicing -------------------------------
+          # Two things a knowledge base cannot do: know who is calling, and answer about their
+          # own account. Both come from Customer Profiles, keyed on the number the call arrived
+          # from. When there is no profile the caller is simply treated as unknown, which is the
+          # common case for an audience dialling in.
+          PROFILE_LOOKUP_MODE = "profile_lookup"
+          PROFILE_DOMAIN = os.environ.get("PROFILE_DOMAIN", "")
+
+          # Servicing questions are about the caller's own account, so they are answered from
+          # the profile rather than the knowledge base, and only when a profile was found.
+          BALANCE_RE = re.compile(r"ยอด|ค้างชำระ|หนี้|ต้องจ่าย|เท่าไหร่ที่ต้อง|ยอดคงเหลือ")
+          DUE_DATE_RE = re.compile(r"ครบกำหนด|กำหนดชำระ|วันไหน|เมื่อไหร่|วันครบ")
+          DEFER_REQUEST_RE = re.compile(r"เลื่อน|ผ่อนผัน|ขอผ่อน|ยังไม่พร้อม|จ่ายไม่ทัน|ขอเวลา")
+
+          PROFILE_UNKNOWN_TH = "ขออภัยค่ะ ดิฉันยังไม่พบข้อมูลบัญชีจากเบอร์ที่โทรเข้ามาค่ะ"
+
+
+          def _profile_fields(phone):
+              """Look up the caller by the number the call arrived from.
+
+              Returns {} when there is no profile, no domain configured, or the lookup fails.
+              An unknown caller is normal, not an error, so this never raises.
+              """
+              if not (PROFILE_DOMAIN and phone):
+                  return {}
+              try:
+                  client = boto3.client("customer-profiles",
+                                        region_name=os.environ.get("AWS_REGION", "us-west-2"))
+                  found = client.search_profiles(DomainName=PROFILE_DOMAIN, KeyName="_phone",
+                                                 Values=[phone], MaxResults=1).get("Items", [])
+              except Exception as exc:
+                  print(f"profile lookup failed: {type(exc).__name__}: {exc}")
+                  return {}
+              if not found:
+                  return {}
+              profile = found[0]
+              attributes = profile.get("Attributes") or {}
+              return {
+                  "firstName": profile.get("FirstName") or "",
+                  "lastName": profile.get("LastName") or "",
+                  "accountType": attributes.get("accountType", ""),
+                  "amount": attributes.get("outstandingAmount", ""),
+                  "dueDate": attributes.get("dueDate", ""),
+                  "policyNumber": attributes.get("policyNumber", ""),
+              }
+
+
+          def _profile_greeting(fields):
+              """Greet a recognised caller by name; stay neutral when unrecognised."""
+              if fields.get("firstName"):
+                  return f"สวัสดีคุณ{fields['firstName']}ค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติค่ะ"
+              return "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติค่ะ"
+
+
+          def _profile_summary(fields):
+              """What the agent should see about a recognised caller."""
+              if not fields.get("firstName"):
+                  return ""
+              parts = [f"ลูกค้า {fields['firstName']} {fields.get('lastName', '')}".strip()]
+              for label, key in (("ประเภทบัญชี", "accountType"), ("ยอดค้างชำระ", "amount"),
+                                 ("ครบกำหนด", "dueDate"), ("เลขกรมธรรม์", "policyNumber")):
+                  if fields.get(key):
+                      parts.append(f"{label} {fields[key]}")
+              return _compact(" | ".join(parts), 200)
+
+
+          def _handle_profile_lookup(attributes):
+              """Flow-facing mode: resolve the caller before the conversation starts."""
+              fields = _profile_fields(str(attributes.get("callerNumber", "")).strip())
+              return {
+                  "profileFound": "true" if fields.get("firstName") else "false",
+                  "profileGreeting": _profile_greeting(fields),
+                  "profileSummary": _profile_summary(fields),
+                  "profileFirstName": fields.get("firstName", ""),
+                  "profileAmount": fields.get("amount", ""),
+                  "profileDueDate": fields.get("dueDate", ""),
+                  "profileAccountType": fields.get("accountType", ""),
+              }
+
+
+          def _handle_servicing(state, transcript, attributes):
+              """Answer about the caller's own account, or hand a request to a person.
+
+              Returns None when the question is not about the caller's account, so the knowledge
+              base handles it. Account questions must never be answered from the knowledge base:
+              a general FAQ has no idea what this caller owes.
+              """
+              compact = _despace(_compact(transcript, 200))
+              amount = str(attributes.get("profileAmount", "")).strip()
+              due = str(attributes.get("profileDueDate", "")).strip()
+              known = str(attributes.get("profileFound", "")).lower() == "true"
+
+              if DEFER_REQUEST_RE.search(compact):
+                  # A deferral changes the account, so an automated caller must not grant it.
+                  state["outcomeDetail"] = "inbound servicing: payment deferral requested"
+                  return _complete(state, "payment_assistance_referral",
+                                   "รับทราบค่ะ เรื่องขอเลื่อนการชำระต้องให้เจ้าหน้าที่พิจารณา " + HANDOFF_HOLD_TH)
+
+              if BALANCE_RE.search(compact) or DUE_DATE_RE.search(compact):
+                  if not known:
+                      return {"done": False, "message": PROFILE_UNKNOWN_TH + " " + KB_INVITE_TH}
+                  if amount and due:
+                      spoken = _thai_baht_words(amount) if _looks_amount(amount) else amount
+                      return {"done": False,
+                              "message": f"ยอดที่ต้องชำระคือ {spoken} ครบกำหนด {due} ค่ะ {KB_INVITE_TH}"}
+                  state["outcomeDetail"] = "inbound servicing: account detail unavailable"
+                  return _complete(state, "unresolved_needs_human",
+                                   "ขออภัยค่ะ ดิฉันยังไม่สามารถดูรายละเอียดบัญชีได้ " + HANDOFF_HOLD_TH)
+              return None
+
 
 
           def _trigrams(text):
@@ -333,6 +464,10 @@ Resources:
               """Answer an inbound question from the knowledge base, or fetch a person."""
               if _classify_wants_human(transcript):
                   return _complete(state, "human_transfer", "รับทราบค่ะ " + HANDOFF_HOLD_TH)
+
+              servicing = _handle_servicing(state, transcript, state.get("inboundAttributes", {}))
+              if servicing is not None:
+                  return servicing
 
               answer, citation, session_id = _kb_lookup(transcript, state.get("kbSessionId"))
               state["kbSessionId"] = session_id
@@ -785,6 +920,9 @@ Resources:
                   return ""
               scenario = SCENARIO_TH.get(state.get("scenario"), state.get("scenario") or "-")
               parts = [f"งาน{scenario}", HANDOFF_REASON_TH.get(outcome_type, outcome_type)]
+              inbound = state.get("inboundAttributes") or {}
+              if inbound.get("profileFirstName"):
+                  parts.append(f"ลูกค้า {inbound['profileFirstName']}")
               for label, value in (
                   ("สนใจ", state.get("productInterest") or state.get("topicInterest")),
                   ("เป้าหมาย", state.get("customerGoal")),
@@ -1044,8 +1182,8 @@ Resources:
               if DEFER_RE.search(compact) and not _looks_amount(compact):
                   state["outcomeDetail"] = "signal=hardship; payment assistance review requested"
                   return _complete(state, "payment_assistance_referral",
-                                   "รับทราบค่ะ จะส่งเรื่องให้ทีมช่วยเหลือด้านการชำระตรวจสอบแนวทางผ่อนผัน "
-                                   "แล้วติดต่อกลับเพื่อแจ้งผลค่ะ")
+                                   "รับทราบค่ะ จะส่งเรื่องให้ทีมช่วยเหลือด้านการชำระตรวจสอบแนวทางผ่อนผันค่ะ "
+                                   + HANDOFF_HOLD_TH)
               if PARTIAL_RE.search(compact) or _looks_amount(compact):
                   state["paymentType"] = "partial"
                   if _looks_amount(compact):
@@ -1337,7 +1475,14 @@ Resources:
               # Inbound callers ask questions, so they take the knowledge base path rather than
               # the outbound script. Dispatched here, before any slot filling, because none of
               # the outbound stages apply to someone who dialled in with a question.
+              if str(attributes.get("mode", "")).lower() == PROFILE_LOOKUP_MODE:
+                  return _handle_profile_lookup(attributes)
+
               if str(attributes.get("mode", "")).lower() == INBOUND_KB_MODE:
+                  state["inboundAttributes"] = {
+                      k: attributes.get(k, "") for k in
+                      ("profileFound", "profileAmount", "profileDueDate", "profileFirstName")
+                  }
                   result = _handle_inbound_kb(state, transcript)
                   state["lastModel"] = "knowledge-base"
                   state["lastLatencyMs"] = 0
@@ -1572,7 +1717,7 @@ Resources:
       InstanceArn: !Ref ConnectInstanceArn
       Type: CONTACT_FLOW
       Content: !Sub |
-        {"Version":"2019-10-30","StartAction":"inbound-logging","Metadata":{"entryPointPosition":{"x":20,"y":20},"snapToGrid":false,"name":"FSI Mantle Inbound Thai","type":"contactFlow","status":"published","ActionMetadata":{}},"Actions":[{"Identifier":"inbound-logging","Type":"UpdateFlowLoggingBehavior","Parameters":{"FlowLoggingBehavior":"Enabled"},"Transitions":{"NextAction":"inbound-analytics","Conditions":[],"Errors":[]}},{"Identifier":"inbound-analytics","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"},"AnalyticsBehavior":{"Enabled":"True","AnalyticsLanguage":"th-TH","ChannelConfiguration":{"Voice":{"AnalyticsModes":["PostContact","AutomatedInteraction"]}}}},"Transitions":{"NextAction":"inbound-voice","Conditions":[],"Errors":[]}},{"Identifier":"inbound-voice","Type":"UpdateContactTextToSpeechVoice","Parameters":{"TextToSpeechVoice":"SUDA","TextToSpeechEngine":"connect:agentic"},"Transitions":{"NextAction":"inbound-language","Conditions":[],"Errors":[{"NextAction":"inbound-language","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-language","Type":"UpdateContactData","Parameters":{"LanguageCode":"th-TH"},"Transitions":{"NextAction":"inbound-scenario","Conditions":[],"Errors":[{"NextAction":"inbound-scenario","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-scenario","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"scenario":"insurance","customerName":"ผู้ทดลองระบบ","channel":"inbound"}},"Transitions":{"NextAction":"inbound-greeting","Conditions":[],"Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-greeting","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติสำหรับการสาธิตระบบเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"},"Transitions":{"NextAction":"inbound-ask","Conditions":[],"Errors":[{"NextAction":"inbound-ask","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-ask","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"สอบถามเรื่องบริการธนาคาร ประกัน หรือหลักทรัพย์ได้เลยค่ะ หากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยนะคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","mode":"inbound_kb","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"inbound-route","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"},{"NextAction":"inbound-error","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-error","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"inbound-resume","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","mode":"inbound_kb","mantleState":"$.Lex.SessionAttributes.mantleState","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"inbound-route","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"},{"NextAction":"inbound-error","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-error","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"inbound-route","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.done"},"Transitions":{"NextAction":"inbound-resume","Errors":[{"NextAction":"inbound-resume","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-closing","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-closing","Type":"MessageParticipant","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt"},"Transitions":{"NextAction":"inbound-record-outcome","Conditions":[],"Errors":[{"NextAction":"inbound-record-outcome","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-record-outcome","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunctionArn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","scenario":"$.Attributes.scenario","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail"}},"Transitions":{"NextAction":"inbound-handoff-branch","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-branch","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.handoffRequired"},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-handoff-attributes","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-handoff-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"handoffReason":"$.Lex.SessionAttributes.handoffReason","handoffSummary":"$.Lex.SessionAttributes.handoffSummary","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail"}},"Transitions":{"NextAction":"inbound-handoff-hooks","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-hooks","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-hooks","Type":"UpdateContactEventHooks","Parameters":{"EventHooks":{"CustomerQueue":"${MantleQueueFlow.ContactFlowArn}","AgentWhisper":"${MantleAgentWhisperFlow.ContactFlowArn}"}},"Transitions":{"NextAction":"inbound-handoff-queue","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-queue","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-queue","Type":"UpdateContactTargetQueue","Parameters":{"QueueId":"${HandoffQueueArn}"},"Transitions":{"NextAction":"inbound-handoff-hours","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-hours","Type":"CheckHoursOfOperation","Parameters":{},"Transitions":{"NextAction":"inbound-handoff-fallback","Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"}],"Conditions":[{"NextAction":"inbound-handoff-transfer","Condition":{"Operator":"Equals","Operands":["True"]}},{"NextAction":"inbound-handoff-fallback","Condition":{"Operator":"Equals","Operands":["False"]}}]}},{"Identifier":"inbound-handoff-transfer","Type":"TransferContactToQueue","Parameters":{},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"},{"NextAction":"inbound-handoff-fallback","ErrorType":"QueueAtCapacity"}],"Conditions":[]}},{"Identifier":"inbound-handoff-fallback","Type":"MessageParticipant","Parameters":{"Text":"ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสายค่ะ จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"},"Transitions":{"NextAction":"inbound-end","Conditions":[],"Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-error","Type":"MessageParticipant","Parameters":{"Text":"ขออภัยค่ะ ระบบสาธิตยังไม่พร้อมให้บริการ กรุณาลองใหม่ภายหลังค่ะ"},"Transitions":{"NextAction":"inbound-end","Conditions":[],"Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-end","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}
+        {"Version":"2019-10-30","StartAction":"inbound-logging","Metadata":{"entryPointPosition":{"x":20,"y":20},"snapToGrid":false,"name":"FSI Mantle Inbound Thai","type":"contactFlow","status":"published","ActionMetadata":{}},"Actions":[{"Identifier":"inbound-logging","Type":"UpdateFlowLoggingBehavior","Parameters":{"FlowLoggingBehavior":"Enabled"},"Transitions":{"NextAction":"inbound-analytics","Conditions":[],"Errors":[]}},{"Identifier":"inbound-analytics","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"},"AnalyticsBehavior":{"Enabled":"True","AnalyticsLanguage":"th-TH","ChannelConfiguration":{"Voice":{"AnalyticsModes":["PostContact","AutomatedInteraction"]}}}},"Transitions":{"NextAction":"inbound-voice","Conditions":[],"Errors":[]}},{"Identifier":"inbound-voice","Type":"UpdateContactTextToSpeechVoice","Parameters":{"TextToSpeechVoice":"SUDA","TextToSpeechEngine":"connect:agentic"},"Transitions":{"NextAction":"inbound-language","Conditions":[],"Errors":[{"NextAction":"inbound-language","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-language","Type":"UpdateContactData","Parameters":{"LanguageCode":"th-TH"},"Transitions":{"NextAction":"inbound-scenario","Conditions":[],"Errors":[{"NextAction":"inbound-scenario","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-scenario","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"scenario":"insurance","customerName":"ผู้ทดลองระบบ","channel":"inbound"}},"Transitions":{"NextAction":"inbound-profile-lookup","Conditions":[],"Errors":[{"NextAction":"inbound-profile-lookup","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-profile-lookup","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${MantleDialogueFunction.Arn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"profile_lookup","callerNumber":"$.CustomerEndpoint.Address"}},"Transitions":{"NextAction":"inbound-profile-attributes","Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-profile-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"profileFound":"$.External.profileFound","profileGreeting":"$.External.profileGreeting","profileSummary":"$.External.profileSummary","profileFirstName":"$.External.profileFirstName","profileAmount":"$.External.profileAmount","profileDueDate":"$.External.profileDueDate"}},"Transitions":{"NextAction":"inbound-greeting","Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-greeting","Type":"MessageParticipant","Parameters":{"Text":"$.Attributes.profileGreeting โทรเข้าระบบสาธิตเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"},"Transitions":{"NextAction":"inbound-ask","Conditions":[],"Errors":[{"NextAction":"inbound-ask","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-ask","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"สอบถามเรื่องบริการธนาคาร, ประกัน, หรือหลักทรัพย์ได้เลยค่ะ หากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยนะคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","mode":"inbound_kb","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000","profileFound":"$.Attributes.profileFound","profileAmount":"$.Attributes.profileAmount","profileDueDate":"$.Attributes.profileDueDate","profileFirstName":"$.Attributes.profileFirstName"}},"Transitions":{"NextAction":"inbound-route","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"},{"NextAction":"inbound-error","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-error","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"inbound-resume","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","mode":"inbound_kb","mantleState":"$.Lex.SessionAttributes.mantleState","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000","profileFound":"$.Attributes.profileFound","profileAmount":"$.Attributes.profileAmount","profileDueDate":"$.Attributes.profileDueDate","profileFirstName":"$.Attributes.profileFirstName"}},"Transitions":{"NextAction":"inbound-route","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"},{"NextAction":"inbound-error","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-error","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"inbound-route","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.done"},"Transitions":{"NextAction":"inbound-resume","Errors":[{"NextAction":"inbound-resume","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-closing","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-closing","Type":"MessageParticipant","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt"},"Transitions":{"NextAction":"inbound-record-outcome","Conditions":[],"Errors":[{"NextAction":"inbound-record-outcome","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-record-outcome","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunctionArn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","scenario":"$.Attributes.scenario","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail"}},"Transitions":{"NextAction":"inbound-handoff-branch","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-branch","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.handoffRequired"},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-handoff-attributes","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-handoff-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"handoffReason":"$.Lex.SessionAttributes.handoffReason","handoffSummary":"$.Lex.SessionAttributes.handoffSummary","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail","profileSummary":"$.Attributes.profileSummary"}},"Transitions":{"NextAction":"inbound-handoff-hooks","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-hooks","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-hooks","Type":"UpdateContactEventHooks","Parameters":{"EventHooks":{"CustomerQueue":"${MantleQueueFlow.ContactFlowArn}","AgentWhisper":"${MantleAgentWhisperFlow.ContactFlowArn}"}},"Transitions":{"NextAction":"inbound-handoff-queue","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-queue","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-queue","Type":"UpdateContactTargetQueue","Parameters":{"QueueId":"${HandoffQueueArn}"},"Transitions":{"NextAction":"inbound-handoff-hours","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-hours","Type":"CheckHoursOfOperation","Parameters":{},"Transitions":{"NextAction":"inbound-handoff-fallback","Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"}],"Conditions":[{"NextAction":"inbound-handoff-transfer","Condition":{"Operator":"Equals","Operands":["True"]}},{"NextAction":"inbound-handoff-fallback","Condition":{"Operator":"Equals","Operands":["False"]}}]}},{"Identifier":"inbound-handoff-transfer","Type":"TransferContactToQueue","Parameters":{},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"},{"NextAction":"inbound-handoff-fallback","ErrorType":"QueueAtCapacity"}],"Conditions":[]}},{"Identifier":"inbound-handoff-fallback","Type":"MessageParticipant","Parameters":{"Text":"ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสายค่ะ จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"},"Transitions":{"NextAction":"inbound-end","Conditions":[],"Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-error","Type":"MessageParticipant","Parameters":{"Text":"ขออภัยค่ะ ระบบสาธิตยังไม่พร้อมให้บริการ กรุณาลองใหม่ภายหลังค่ะ"},"Transitions":{"NextAction":"inbound-end","Conditions":[],"Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-end","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}
 Outputs:
   MantleFunctionName:
     Value: !Ref MantleDialogueFunction

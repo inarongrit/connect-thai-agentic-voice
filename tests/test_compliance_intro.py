@@ -172,13 +172,43 @@ class InboundDisclosureTests(unittest.TestCase):
         """Guards against the tests passing because nothing was found."""
         self.assertEqual(set(self._greetings()), INBOUND_DIALOGUE)
 
-    def test_greeting_carries_every_disclosure(self):
+    # The greeting is composed at runtime: a personalised opening from the dialogue
+    # Lambda, then the fixed disclosures from the flow. Checking only the flow text
+    # would miss half of it, so both halves are checked and so is the wiring that
+    # joins them -- if the flow stopped referencing the attribute, a caller would hear
+    # no identity disclosure at all and the static text alone would still look fine.
+    STATIC_REQUIRED = {"บันทึก": "recording notice",
+                       "สมมติ": "fictional-data notice"}
+    DYNAMIC_REQUIRED = {"ผู้ช่วยอัตโนมัติ": "automated-voice disclosure",
+                        "สุดา": "assistant self-introduction"}
+
+    def test_the_flow_uses_the_personalised_greeting(self):
+        for source, messages in self._greetings().items():
+            with self.subTest(source=source):
+                self.assertIn("$.Attributes.profileGreeting",
+                              messages.get("inbound-greeting", ""),
+                              "the greeting must include the Lambda's opening")
+
+    def test_the_fixed_half_carries_its_disclosures(self):
         for source, messages in self._greetings().items():
             text = messages.get("inbound-greeting", "")
             with self.subTest(source=source):
                 self.assertTrue(text, f"{source} has no greeting")
-                for token, description in self.REQUIRED.items():
+                for token, description in self.STATIC_REQUIRED.items():
                     self.assertIn(token, text, f"{source} lacks {description}")
+
+    def test_the_personalised_half_identifies_the_assistant(self):
+        """Both recognised and unrecognised callers must hear who is speaking."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "greeting_check", Path(__file__).parents[1] / "lambda" / "mantle_dialogue.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for fields in ({}, {"firstName": "สมชาย"}):
+            greeting = module._profile_greeting(fields)
+            with self.subTest(known=bool(fields)):
+                for token, description in self.DYNAMIC_REQUIRED.items():
+                    self.assertIn(token, greeting, f"greeting lacks {description}")
 
     def test_disclosures_precede_the_first_question(self):
         """Nothing may be collected before the caller knows what they reached."""

@@ -111,6 +111,11 @@ HANDOFF_OUTCOMES = frozenset({
     "unresolved_needs_human",
     "licensed_rep_referral",
     "affordability_review",
+    # Added when inbound servicing began routing deferral requests to a person. The
+    # outcome already told the caller a person would take over, but it was not in this
+    # set, so the flow would have played the transfer wording and then hung up -- the
+    # same defect as the first handoff deploy, in a different outcome.
+    "payment_assistance_referral",
 })
 
 # Why the agent is receiving this call, in Thai, for the whisper and the CCP.
@@ -121,6 +126,7 @@ HANDOFF_REASON_TH = {
     "unresolved_needs_human": "ระบบไม่สามารถช่วยได้ ต้องให้เจ้าหน้าที่ดูแล",
     "licensed_rep_referral": "ต้องผู้แนะนำการลงทุนที่ได้รับอนุญาต",
     "affordability_review": "ขอทบทวนความคุ้มครองและค่าเบี้ยที่เหมาะสม",
+    "payment_assistance_referral": "ขอผ่อนผันการชำระ",
 }
 
 SCENARIO_TH = {"bank": "ธนาคาร", "insurance": "ประกัน", "broker": "หลักทรัพย์"}
@@ -158,7 +164,118 @@ KB_ANSWER_LIMIT = 260
 
 KB_NO_ANSWER_TH = ("ขออภัยค่ะ ดิฉันยังไม่มีข้อมูลเรื่องนี้ "
                    "ขอโอนสายให้เจ้าหน้าที่ช่วยดูแลนะคะ")
-KB_INVITE_TH = "สอบถามเรื่องอื่นได้อีกนะคะ หรือหากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยค่ะ"
+KB_INVITE_TH = "สอบถามเรื่องอื่นได้อีกนะคะ, หรือหากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยค่ะ"
+
+# --- Caller recognition and account servicing -------------------------------
+# Two things a knowledge base cannot do: know who is calling, and answer about their
+# own account. Both come from Customer Profiles, keyed on the number the call arrived
+# from. When there is no profile the caller is simply treated as unknown, which is the
+# common case for an audience dialling in.
+PROFILE_LOOKUP_MODE = "profile_lookup"
+PROFILE_DOMAIN = os.environ.get("PROFILE_DOMAIN", "")
+
+# Servicing questions are about the caller's own account, so they are answered from
+# the profile rather than the knowledge base, and only when a profile was found.
+BALANCE_RE = re.compile(r"ยอด|ค้างชำระ|หนี้|ต้องจ่าย|เท่าไหร่ที่ต้อง|ยอดคงเหลือ")
+DUE_DATE_RE = re.compile(r"ครบกำหนด|กำหนดชำระ|วันไหน|เมื่อไหร่|วันครบ")
+DEFER_REQUEST_RE = re.compile(r"เลื่อน|ผ่อนผัน|ขอผ่อน|ยังไม่พร้อม|จ่ายไม่ทัน|ขอเวลา")
+
+PROFILE_UNKNOWN_TH = "ขออภัยค่ะ ดิฉันยังไม่พบข้อมูลบัญชีจากเบอร์ที่โทรเข้ามาค่ะ"
+
+
+def _profile_fields(phone):
+    """Look up the caller by the number the call arrived from.
+
+    Returns {} when there is no profile, no domain configured, or the lookup fails.
+    An unknown caller is normal, not an error, so this never raises.
+    """
+    if not (PROFILE_DOMAIN and phone):
+        return {}
+    try:
+        client = boto3.client("customer-profiles",
+                              region_name=os.environ.get("AWS_REGION", "us-west-2"))
+        found = client.search_profiles(DomainName=PROFILE_DOMAIN, KeyName="_phone",
+                                       Values=[phone], MaxResults=1).get("Items", [])
+    except Exception as exc:
+        print(f"profile lookup failed: {type(exc).__name__}: {exc}")
+        return {}
+    if not found:
+        return {}
+    profile = found[0]
+    attributes = profile.get("Attributes") or {}
+    return {
+        "firstName": profile.get("FirstName") or "",
+        "lastName": profile.get("LastName") or "",
+        "accountType": attributes.get("accountType", ""),
+        "amount": attributes.get("outstandingAmount", ""),
+        "dueDate": attributes.get("dueDate", ""),
+        "policyNumber": attributes.get("policyNumber", ""),
+    }
+
+
+def _profile_greeting(fields):
+    """Greet a recognised caller by name; stay neutral when unrecognised."""
+    if fields.get("firstName"):
+        return f"สวัสดีคุณ{fields['firstName']}ค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติค่ะ"
+    return "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติค่ะ"
+
+
+def _profile_summary(fields):
+    """What the agent should see about a recognised caller."""
+    if not fields.get("firstName"):
+        return ""
+    parts = [f"ลูกค้า {fields['firstName']} {fields.get('lastName', '')}".strip()]
+    for label, key in (("ประเภทบัญชี", "accountType"), ("ยอดค้างชำระ", "amount"),
+                       ("ครบกำหนด", "dueDate"), ("เลขกรมธรรม์", "policyNumber")):
+        if fields.get(key):
+            parts.append(f"{label} {fields[key]}")
+    return _compact(" | ".join(parts), 200)
+
+
+def _handle_profile_lookup(attributes):
+    """Flow-facing mode: resolve the caller before the conversation starts."""
+    fields = _profile_fields(str(attributes.get("callerNumber", "")).strip())
+    return {
+        "profileFound": "true" if fields.get("firstName") else "false",
+        "profileGreeting": _profile_greeting(fields),
+        "profileSummary": _profile_summary(fields),
+        "profileFirstName": fields.get("firstName", ""),
+        "profileAmount": fields.get("amount", ""),
+        "profileDueDate": fields.get("dueDate", ""),
+        "profileAccountType": fields.get("accountType", ""),
+    }
+
+
+def _handle_servicing(state, transcript, attributes):
+    """Answer about the caller's own account, or hand a request to a person.
+
+    Returns None when the question is not about the caller's account, so the knowledge
+    base handles it. Account questions must never be answered from the knowledge base:
+    a general FAQ has no idea what this caller owes.
+    """
+    compact = _despace(_compact(transcript, 200))
+    amount = str(attributes.get("profileAmount", "")).strip()
+    due = str(attributes.get("profileDueDate", "")).strip()
+    known = str(attributes.get("profileFound", "")).lower() == "true"
+
+    if DEFER_REQUEST_RE.search(compact):
+        # A deferral changes the account, so an automated caller must not grant it.
+        state["outcomeDetail"] = "inbound servicing: payment deferral requested"
+        return _complete(state, "payment_assistance_referral",
+                         "รับทราบค่ะ เรื่องขอเลื่อนการชำระต้องให้เจ้าหน้าที่พิจารณา " + HANDOFF_HOLD_TH)
+
+    if BALANCE_RE.search(compact) or DUE_DATE_RE.search(compact):
+        if not known:
+            return {"done": False, "message": PROFILE_UNKNOWN_TH + " " + KB_INVITE_TH}
+        if amount and due:
+            spoken = _thai_baht_words(amount) if _looks_amount(amount) else amount
+            return {"done": False,
+                    "message": f"ยอดที่ต้องชำระคือ {spoken} ครบกำหนด {due} ค่ะ {KB_INVITE_TH}"}
+        state["outcomeDetail"] = "inbound servicing: account detail unavailable"
+        return _complete(state, "unresolved_needs_human",
+                         "ขออภัยค่ะ ดิฉันยังไม่สามารถดูรายละเอียดบัญชีได้ " + HANDOFF_HOLD_TH)
+    return None
+
 
 
 def _trigrams(text):
@@ -235,6 +352,10 @@ def _handle_inbound_kb(state, transcript):
     """Answer an inbound question from the knowledge base, or fetch a person."""
     if _classify_wants_human(transcript):
         return _complete(state, "human_transfer", "รับทราบค่ะ " + HANDOFF_HOLD_TH)
+
+    servicing = _handle_servicing(state, transcript, state.get("inboundAttributes", {}))
+    if servicing is not None:
+        return servicing
 
     answer, citation, session_id = _kb_lookup(transcript, state.get("kbSessionId"))
     state["kbSessionId"] = session_id
@@ -687,6 +808,9 @@ def _handoff_summary(state, outcome_type):
         return ""
     scenario = SCENARIO_TH.get(state.get("scenario"), state.get("scenario") or "-")
     parts = [f"งาน{scenario}", HANDOFF_REASON_TH.get(outcome_type, outcome_type)]
+    inbound = state.get("inboundAttributes") or {}
+    if inbound.get("profileFirstName"):
+        parts.append(f"ลูกค้า {inbound['profileFirstName']}")
     for label, value in (
         ("สนใจ", state.get("productInterest") or state.get("topicInterest")),
         ("เป้าหมาย", state.get("customerGoal")),
@@ -946,8 +1070,8 @@ def _handle_hardship_options(state, transcript):
     if DEFER_RE.search(compact) and not _looks_amount(compact):
         state["outcomeDetail"] = "signal=hardship; payment assistance review requested"
         return _complete(state, "payment_assistance_referral",
-                         "รับทราบค่ะ จะส่งเรื่องให้ทีมช่วยเหลือด้านการชำระตรวจสอบแนวทางผ่อนผัน "
-                         "แล้วติดต่อกลับเพื่อแจ้งผลค่ะ")
+                         "รับทราบค่ะ จะส่งเรื่องให้ทีมช่วยเหลือด้านการชำระตรวจสอบแนวทางผ่อนผันค่ะ "
+                         + HANDOFF_HOLD_TH)
     if PARTIAL_RE.search(compact) or _looks_amount(compact):
         state["paymentType"] = "partial"
         if _looks_amount(compact):
@@ -1239,7 +1363,14 @@ def handler(event, context):
     # Inbound callers ask questions, so they take the knowledge base path rather than
     # the outbound script. Dispatched here, before any slot filling, because none of
     # the outbound stages apply to someone who dialled in with a question.
+    if str(attributes.get("mode", "")).lower() == PROFILE_LOOKUP_MODE:
+        return _handle_profile_lookup(attributes)
+
     if str(attributes.get("mode", "")).lower() == INBOUND_KB_MODE:
+        state["inboundAttributes"] = {
+            k: attributes.get(k, "") for k in
+            ("profileFound", "profileAmount", "profileDueDate", "profileFirstName")
+        }
         result = _handle_inbound_kb(state, transcript)
         state["lastModel"] = "knowledge-base"
         state["lastLatencyMs"] = 0
