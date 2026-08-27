@@ -27,7 +27,8 @@ SPEC.loader.exec_module(MODULE)
 KNOWN = {"FirstName": "สมชาย", "LastName": "ใจดี",
          "Attributes": {"accountType": "สินเชื่อบุคคล",
                         "outstandingAmount": "15,500",
-                        "dueDate": "15 สิงหาคม 2569"}}
+                        "dueDate": "15 สิงหาคม 2569",
+                        "verifyDigits": "4321"}}
 
 
 def profiles_client(items):
@@ -202,10 +203,15 @@ class EventShapeTests(unittest.TestCase):
 
 class AccountServicingTests(unittest.TestCase):
     def test_a_balance_question_is_answered_from_the_profile(self):
-        """Never from the knowledge base: a general FAQ does not know this account."""
+        """Never from the knowledge base: a general FAQ does not know this account.
+
+        verified is required now. This test passed without it while recognition alone
+        was enough to disclose a balance, which was the weakness keypad verification
+        exists to close.
+        """
         with patch.object(MODULE.boto3, "client") as client:
             spoken = attrs(MODULE.handler(servicing_event(
-                "ยอดที่ต้องชำระเท่าไหร่", profileFound="true",
+                "ยอดที่ต้องชำระเท่าไหร่", profileFound="true", verified="true",
                 profileAmount="15,500", profileDueDate="15 สิงหาคม 2569"), None))
         client.assert_not_called()
         self.assertIn("15 สิงหาคม 2569", spoken["nextPrompt"])
@@ -214,7 +220,7 @@ class AccountServicingTests(unittest.TestCase):
     def test_the_amount_is_spoken_as_words_not_digits(self):
         with patch.object(MODULE.boto3, "client"):
             spoken = attrs(MODULE.handler(servicing_event(
-                "ยอดค้างชำระเท่าไหร่", profileFound="true",
+                "ยอดค้างชำระเท่าไหร่", profileFound="true", verified="true",
                 profileAmount="15,500", profileDueDate="15 สิงหาคม 2569"), None))
         self.assertIn("บาท", spoken["nextPrompt"])
 
@@ -264,6 +270,85 @@ class AccountServicingTests(unittest.TestCase):
                 profileAmount="15,500", profileDueDate="15 สิงหาคม 2569"), None))
         self.assertIn("สมชาย", spoken["handoffSummary"])
 
+
+
+class KeypadVerificationTests(unittest.TestCase):
+    """Recognising a number is not authenticating a person.
+
+    Before this, anyone calling from a recognised number heard the balance. The secret is
+    entered on the keypad rather than spoken because Contact Lens cannot redact Thai, so
+    a spoken secret would sit in the transcript and the recording in the clear.
+    """
+
+    @staticmethod
+    def _verify(entered):
+        event = {"Name": "ContactFlowEvent",
+                 "Details": {"ContactData": {"CustomerEndpoint": {"Address": KNOWN_NUMBER}},
+                             "Parameters": {"mode": "verify", "enteredDigits": entered}}}
+        with patch.object(MODULE.boto3, "client", return_value=profiles_client([KNOWN])):
+            return MODULE.handler(event, None)
+
+    def test_the_right_digits_verify(self):
+        self.assertEqual(self._verify("4321")["verified"], "true")
+
+    def test_the_wrong_digits_do_not(self):
+        self.assertEqual(self._verify("9999")["verified"], "false")
+
+    def test_no_entry_does_not_verify(self):
+        self.assertEqual(self._verify("")["verified"], "false")
+
+    def test_non_digits_are_stripped_before_comparison(self):
+        """Connect appends the terminating key, which is not part of the secret."""
+        self.assertEqual(self._verify("4321#")["verified"], "true")
+
+    def test_a_profile_without_a_secret_fails_closed(self):
+        without = {"FirstName": "สมชาย", "Attributes": {}}
+        event = {"Name": "ContactFlowEvent",
+                 "Details": {"ContactData": {"CustomerEndpoint": {"Address": KNOWN_NUMBER}},
+                             "Parameters": {"mode": "verify", "enteredDigits": ""}}}
+        with patch.object(MODULE.boto3, "client", return_value=profiles_client([without])):
+            self.assertEqual(MODULE.handler(event, None)["verified"], "false")
+
+    def test_the_comparison_is_constant_time(self):
+        source = (ROOT / "lambda" / "mantle_dialogue.py").read_text()
+        self.assertIn("hmac.compare_digest(entered, expected)", source)
+
+
+class DisclosureRequiresVerificationTests(unittest.TestCase):
+    def test_a_recognised_but_unverified_caller_is_refused(self):
+        with patch.object(MODULE.boto3, "client"):
+            spoken = attrs(MODULE.handler(servicing_event(
+                "ยอดที่ต้องชำระเท่าไหร่", profileFound="true", verified="false",
+                profileAmount="15,500", profileDueDate="15 สิงหาคม 2569"), None))
+        self.assertIn("ยังไม่ได้ยืนยันตัวตน", spoken["nextPrompt"])
+        self.assertNotIn("15", spoken["nextPrompt"])
+
+    def test_a_verified_caller_hears_the_balance(self):
+        with patch.object(MODULE.boto3, "client"):
+            spoken = attrs(MODULE.handler(servicing_event(
+                "ยอดที่ต้องชำระเท่าไหร่", profileFound="true", verified="true",
+                profileAmount="15,500", profileDueDate="15 สิงหาคม 2569"), None))
+        self.assertIn("บาท", spoken["nextPrompt"])
+
+    def test_the_flow_suppresses_recording_around_the_keypad_entry(self):
+        """A secret keyed while recording is a secret stored in the recording."""
+        actions = {a["Identifier"]: a for a in
+                   json.loads((ROOT / "iac" / "mantle-inbound-flow.json").read_text())["Actions"]}
+        off = actions["inbound-record-off"]["Parameters"]["RecordingBehavior"]
+        self.assertEqual(off["RecordedParticipants"], [])
+        self.assertEqual(actions["inbound-record-off"]["Transitions"]["NextAction"],
+                         "inbound-verify-input")
+        on = actions["inbound-record-on"]["Parameters"]["RecordingBehavior"]
+        self.assertEqual(on["RecordedParticipants"], ["Agent", "Customer"])
+
+    def test_recording_resumes_on_every_verification_path(self):
+        actions = {a["Identifier"]: a for a in
+                   json.loads((ROOT / "iac" / "mantle-inbound-flow.json").read_text())["Actions"]}
+        for ident in ("inbound-verify-input", "inbound-verify-check"):
+            with self.subTest(action=ident):
+                targets = {e["NextAction"] for e in actions[ident]["Transitions"]["Errors"]}
+                self.assertEqual(targets, {"inbound-record-on"},
+                                 "a failure must not leave recording switched off")
 
 if __name__ == "__main__":
     unittest.main()

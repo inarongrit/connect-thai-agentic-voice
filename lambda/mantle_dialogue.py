@@ -1,4 +1,5 @@
 """Feature-flagged Thai dialogue engine using GPT-5.6 on Amazon Bedrock."""
+import hmac
 import json
 import uuid
 import os
@@ -188,6 +189,29 @@ DEFER_REQUEST_RE = re.compile(r"เลื่อน|ผ่อนผัน|ขอ�
 
 PROFILE_UNKNOWN_TH = "ขออภัยค่ะ ดิฉันยังไม่พบข้อมูลบัญชีจากเบอร์ที่โทรเข้ามาค่ะ"
 
+# --- Keypad verification before disclosing an account -----------------------
+# Recognising the number a call came from is not authentication: anyone holding the
+# handset would otherwise hear the balance. Verification is a four digit secret entered
+# on the keypad, which also keeps it out of the transcript and the recording -- Contact
+# Lens cannot redact Thai, so anything spoken aloud is stored in the clear.
+VERIFY_MODE = "verify"
+VERIFY_UNVERIFIED_TH = ("ขออภัยค่ะ ดิฉันยังไม่สามารถแจ้งข้อมูลบัญชีได้ "
+                        "เนื่องจากยังไม่ได้ยืนยันตัวตนค่ะ")
+
+
+def _handle_verify(parameters, event):
+    """Compare the digits keyed in against the secret held on the profile."""
+    entered = re.sub(r"\D", "", str(parameters.get("enteredDigits", "") or ""))
+    fields = _profile_fields(_caller_number(event or {}, parameters))
+    expected = re.sub(r"\D", "", fields.get("verifyDigits", ""))
+    # compare_digest so the comparison does not leak the secret through timing, and an
+    # absent secret fails closed rather than matching an empty entry.
+    verified = bool(expected) and bool(entered) and hmac.compare_digest(entered, expected)
+    print(f"verify: entered={'yes' if entered else 'no'} "
+          f"expected={'set' if expected else 'MISSING'} verified={verified}")
+    return {"verified": "true" if verified else "false"}
+
+
 
 def _profile_fields(phone):
     """Look up the caller by the number the call arrived from.
@@ -220,6 +244,7 @@ def _profile_fields(phone):
         "amount": attributes.get("outstandingAmount", ""),
         "dueDate": attributes.get("dueDate", ""),
         "policyNumber": attributes.get("policyNumber", ""),
+        "verifyDigits": attributes.get("verifyDigits", ""),
     }
 
 
@@ -302,6 +327,10 @@ def _handle_servicing(state, transcript, attributes):
     if BALANCE_RE.search(compact) or DUE_DATE_RE.search(compact):
         if not known:
             return {"done": False, "message": PROFILE_UNKNOWN_TH + " " + KB_INVITE_TH}
+        if str(attributes.get("verified", "")).lower() != "true":
+            # Recognised but not verified. Refusing is the whole point of the control, so
+            # the caller is offered a person rather than the figure.
+            return {"done": False, "message": VERIFY_UNVERIFIED_TH + " " + KB_INVITE_TH}
         if amount and due:
             spoken = _thai_baht_words(amount) if _looks_amount(amount) else amount
             return {"done": False,
@@ -1403,6 +1432,8 @@ def handler(event, context):
     if flow_parameters:
         if str(flow_parameters.get("mode", "")).lower() == PROFILE_LOOKUP_MODE:
             return _handle_profile_lookup(flow_parameters, event)
+        if str(flow_parameters.get("mode", "")).lower() == VERIFY_MODE:
+            return _handle_verify(flow_parameters, event)
         # Anything else from a flow is a wiring mistake. Returning a flat map keeps the
         # flow on its success branch so a caller is never dropped over it.
         return {"profileFound": "false", "profileGreeting": "", "profileSummary": ""}
@@ -1420,7 +1451,8 @@ def handler(event, context):
     if str(attributes.get("mode", "")).lower() == INBOUND_KB_MODE:
         state["inboundAttributes"] = {
             k: attributes.get(k, "") for k in
-            ("profileFound", "profileAmount", "profileDueDate", "profileFirstName")
+            ("profileFound", "profileAmount", "profileDueDate", "profileFirstName",
+             "verified")
         }
         result = _handle_inbound_kb(state, transcript)
         state["lastModel"] = "knowledge-base"

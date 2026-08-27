@@ -208,14 +208,139 @@
         "Text": "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของระบบสาธิตเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"
       },
       "Transitions": {
-        "NextAction": "inbound-ask",
+        "NextAction": "inbound-verify-branch",
         "Conditions": [],
         "Errors": [
           {
-            "NextAction": "inbound-ask",
+            "NextAction": "inbound-verify-branch",
             "ErrorType": "NoMatchingError"
           }
         ]
+      }
+    },
+    {
+      "Identifier": "inbound-verify-branch",
+      "Type": "Compare",
+      "Parameters": {
+        "ComparisonValue": "$.Attributes.profileFound"
+      },
+      "Transitions": {
+        "NextAction": "inbound-ask",
+        "Errors": [
+          {
+            "NextAction": "inbound-ask",
+            "ErrorType": "NoMatchingCondition"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "inbound-record-off",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "true"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-record-off",
+      "Type": "UpdateContactRecordingBehavior",
+      "Parameters": {
+        "RecordingBehavior": {
+          "RecordedParticipants": []
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-verify-input",
+        "Errors": [],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-verify-input",
+      "Type": "GetParticipantInput",
+      "Parameters": {
+        "Text": "เพื่อความปลอดภัย กรุณากดรหัสยืนยันสี่หลักตามด้วยเครื่องหมายสี่เหลี่ยมค่ะ",
+        "StoreInput": "True",
+        "InputTimeLimitSeconds": "12",
+        "InputValidation": {
+          "CustomValidation": {
+            "MaximumLength": "4"
+          }
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-verify-check",
+        "Errors": [
+          {
+            "NextAction": "inbound-record-on",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-verify-check",
+      "Type": "InvokeLambdaFunction",
+      "Parameters": {
+        "LambdaFunctionARN": "${MantleDialogueFunction.Arn}",
+        "InvocationTimeLimitSeconds": "8",
+        "LambdaInvocationAttributes": {
+          "mode": "verify",
+          "enteredDigits": "$.StoredCustomerInput",
+          "callerNumber": "$.CustomerEndpoint.Address"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-verify-attributes",
+        "Errors": [
+          {
+            "NextAction": "inbound-record-on",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-verify-attributes",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "verified": "$.External.verified"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-record-on",
+        "Errors": [
+          {
+            "NextAction": "inbound-record-on",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-record-on",
+      "Type": "UpdateContactRecordingBehavior",
+      "Parameters": {
+        "RecordingBehavior": {
+          "RecordedParticipants": [
+            "Agent",
+            "Customer"
+          ],
+          "IVRRecordingBehavior": "Enabled"
+        }
+      },
+      "Transitions": {
+        "NextAction": "inbound-ask",
+        "Errors": [],
+        "Conditions": []
       }
     },
     {
@@ -237,7 +362,8 @@
           "profileFound": "$.Attributes.profileFound",
           "profileAmount": "$.Attributes.profileAmount",
           "profileDueDate": "$.Attributes.profileDueDate",
-          "profileFirstName": "$.Attributes.profileFirstName"
+          "profileFirstName": "$.Attributes.profileFirstName",
+          "verified": "$.Attributes.verified"
         }
       },
       "Transitions": {
@@ -297,7 +423,8 @@
           "profileFound": "$.Attributes.profileFound",
           "profileAmount": "$.Attributes.profileAmount",
           "profileDueDate": "$.Attributes.profileDueDate",
-          "profileFirstName": "$.Attributes.profileFirstName"
+          "profileFirstName": "$.Attributes.profileFirstName",
+          "verified": "$.Attributes.verified"
         }
       },
       "Transitions": {
