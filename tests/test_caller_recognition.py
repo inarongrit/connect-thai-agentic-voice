@@ -143,6 +143,39 @@ class CallerRecognitionTests(unittest.TestCase):
         self.assertEqual(result["profileFound"], "false")
 
 
+    def test_the_number_is_taken_from_contact_data_when_no_parameter_is_given(self):
+        """Connect populates ContactData on every voice contact.
+
+        The flow substitutes $.CustomerEndpoint.Address into a parameter, and when that
+        arrived empty the caller was greeted as a stranger with nothing in the log to
+        explain it. ContactData is the source that is always present.
+        """
+        event = {"Name": "ContactFlowEvent",
+                 "Details": {"ContactData": {
+                     "CustomerEndpoint": {"Address": KNOWN_NUMBER, "Type": "TELEPHONE_NUMBER"}},
+                     "Parameters": {"mode": "profile_lookup"}}}
+        with patch.object(MODULE.boto3, "client", return_value=profiles_client([KNOWN])):
+            result = MODULE.handler(event, None)
+        self.assertEqual(result["profileFound"], "true")
+        self.assertIn("สมชาย", result["profileGreeting"])
+
+    def test_an_explicit_parameter_still_wins(self):
+        event = {"Name": "ContactFlowEvent",
+                 "Details": {"ContactData": {"CustomerEndpoint": {"Address": UNKNOWN_NUMBER}},
+                             "Parameters": {"mode": "profile_lookup",
+                                            "callerNumber": KNOWN_NUMBER}}}
+        with patch.object(MODULE.boto3, "client", return_value=profiles_client([KNOWN])) as c:
+            MODULE.handler(event, None)
+        self.assertTrue(c.called)
+
+    def test_no_number_anywhere_is_reported_not_guessed(self):
+        event = {"Name": "ContactFlowEvent",
+                 "Details": {"ContactData": {}, "Parameters": {"mode": "profile_lookup"}}}
+        with patch.object(MODULE.boto3, "client") as c:
+            result = MODULE.handler(event, None)
+        c.assert_not_called()
+        self.assertEqual(result["profileFound"], "false")
+
 class EventShapeTests(unittest.TestCase):
     """Both callers of this function must keep working."""
 

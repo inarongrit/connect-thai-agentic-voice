@@ -359,9 +359,28 @@ Resources:
               return _compact(" | ".join(parts), 200)
 
 
-          def _handle_profile_lookup(attributes):
+          def _caller_number(event, parameters):
+              """The number the call arrived from.
+
+              Taken from ContactData, which Connect populates on every voice contact, rather
+              than relying on the flow substituting $.CustomerEndpoint.Address into a parameter.
+              The parameter is still honoured first so the behaviour can be driven directly, but
+              it is no longer the only source: when it arrived empty the lookup silently found
+              nobody and the caller was greeted as a stranger with nothing in the log to say why.
+              """
+              supplied = str(parameters.get("callerNumber", "") or "").strip()
+              if supplied:
+                  return supplied
+              contact = (event.get("Details") or {}).get("ContactData") or {}
+              return str(((contact.get("CustomerEndpoint") or {}).get("Address") or "")).strip()
+
+
+          def _handle_profile_lookup(attributes, event=None):
               """Flow-facing mode: resolve the caller before the conversation starts."""
-              fields = _profile_fields(str(attributes.get("callerNumber", "")).strip())
+              number = _caller_number(event or {}, attributes)
+              fields = _profile_fields(number)
+              print(f"profile lookup: number={'present' if number else 'MISSING'} "
+                    f"matched={'yes' if fields.get('firstName') else 'no'}")
               return {
                   "profileFound": "true" if fields.get("firstName") else "false",
                   "profileGreeting": _profile_greeting(fields),
@@ -479,6 +498,11 @@ Resources:
               """Answer an inbound question from the knowledge base, or fetch a person."""
               if _classify_wants_human(transcript):
                   return _complete(state, "human_transfer", "รับทราบค่ะ " + HANDOFF_HOLD_TH)
+
+              if not (transcript or "").strip():
+                  # Silence, or speech Lex could not transcribe. Asking the knowledge base an
+                  # empty question fails validation, so invite the caller to try again.
+                  return {"done": False, "message": "ขออภัยค่ะ ดิฉันฟังไม่ชัด " + KB_INVITE_TH}
 
               servicing = _handle_servicing(state, transcript, state.get("inboundAttributes", {}))
               if servicing is not None:
@@ -1489,7 +1513,7 @@ Resources:
               flow_parameters = (event.get("Details") or {}).get("Parameters") or {}
               if flow_parameters:
                   if str(flow_parameters.get("mode", "")).lower() == PROFILE_LOOKUP_MODE:
-                      return _handle_profile_lookup(flow_parameters)
+                      return _handle_profile_lookup(flow_parameters, event)
                   # Anything else from a flow is a wiring mistake. Returning a flat map keeps the
                   # flow on its success branch so a caller is never dropped over it.
                   return {"profileFound": "false", "profileGreeting": "", "profileSummary": ""}
