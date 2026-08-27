@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>ถอดเสียงสด · Live Thai Transcript</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#04120d; --ink-2:#071b14; --paper:#eafff4;
+    --mint:#6eebb5; --mint-dim:rgba(110,235,181,.16);
+    --amber:#ffc76e; --line:rgba(110,235,181,.22);
+    --customer:#8fd4ff; --agent:var(--mint); --system:#b9a6ff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:
+      radial-gradient(circle at 18% 8%,rgba(110,235,181,.10),transparent 42%),
+      radial-gradient(circle at 88% 92%,rgba(255,199,110,.07),transparent 46%),
+      var(--ink);
+    color:var(--paper); font-family:"IBM Plex Sans Thai",system-ui,sans-serif;
+    display:flex; flex-direction:column;
+  }
+  /* Fine grain keeps a large flat dark panel from banding on a projector. */
+  body::after{
+    content:""; position:fixed; inset:0; pointer-events:none; opacity:.035; z-index:5;
+    background-image:radial-gradient(#fff 1px,transparent 1px);
+    background-size:3px 3px;
+  }
+  header{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:16px 22px; border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,rgba(7,27,20,.96),rgba(4,18,13,.72));
+    position:sticky; top:0; z-index:4;
+  }
+  h1{
+    margin:0; font-size:15px; font-weight:600; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--mint);
+  }
+  .sub{font-size:12px; color:rgba(234,255,244,.52); letter-spacing:.05em}
+  .state{
+    margin-left:auto; display:flex; align-items:center; gap:9px;
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; letter-spacing:.1em;
+    text-transform:uppercase; color:rgba(234,255,244,.66);
+  }
+  .dot{
+    width:9px; height:9px; border-radius:50%; background:rgba(234,255,244,.28);
+    box-shadow:0 0 0 4px rgba(234,255,244,.05);
+  }
+  .dot.live{background:var(--mint); box-shadow:0 0 0 4px var(--mint-dim); animation:pulse 1.9s ease-in-out infinite}
+  .dot.waiting{background:var(--amber); box-shadow:0 0 0 4px rgba(255,199,110,.14)}
+  .dot.error{background:#ff8a8a; box-shadow:0 0 0 4px rgba(255,138,138,.16)}
+  @keyframes pulse{50%{box-shadow:0 0 0 9px rgba(110,235,181,0)}}
+
+  main{flex:1; overflow-y:auto; padding:22px clamp(14px,4vw,42px) 46px; scrollbar-width:thin}
+  .turns{max-width:940px; margin:0 auto; display:flex; flex-direction:column; gap:12px}
+
+  .turn{
+    display:grid; grid-template-columns:96px 1fr; gap:16px; align-items:start;
+    padding:13px 16px; border-radius:12px;
+    border:1px solid var(--line); border-left:3px solid var(--speaker,var(--mint));
+    background:linear-gradient(145deg,rgba(110,235,181,.05),rgba(7,27,20,.55));
+    animation:rise .34s cubic-bezier(.2,.7,.3,1) both;
+  }
+  @keyframes rise{from{opacity:0; transform:translateY(9px)}}
+  .turn[data-role="CUSTOMER"]{--speaker:var(--customer)}
+  .turn[data-role="AGENT"]{--speaker:var(--agent)}
+  .turn[data-role="SYSTEM"]{--speaker:var(--system)}
+  .who{
+    font-size:12.5px; font-weight:600; color:var(--speaker);
+    display:flex; flex-direction:column; gap:3px;
+  }
+  .at{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:rgba(234,255,244,.4); letter-spacing:.06em}
+  .said{font-size:16px; line-height:1.62; word-break:break-word}
+
+  .empty{
+    max-width:520px; margin:14vh auto 0; text-align:center;
+    color:rgba(234,255,244,.5); font-size:15px; line-height:1.8;
+  }
+  .empty b{color:var(--mint); font-weight:600}
+  .warn{
+    max-width:940px; margin:0 auto 16px; padding:10px 14px; border-radius:10px;
+    border:1px solid rgba(255,199,110,.3); background:rgba(255,199,110,.07);
+    font-size:12.5px; color:rgba(234,255,244,.74);
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>ถอดเสียงสด</h1>
+    <div class="sub">Contact Lens real-time · ภาษาไทย · th-TH</div>
+  </div>
+  <div class="state"><span class="dot" id="dot"></span><span id="state">กำลังเชื่อมต่อ</span></div>
+</header>
+
+<main>
+  <div class="warn">
+    ข้อมูลการสนทนาไม่มีการปิดบังข้อมูลส่วนบุคคล เนื่องจาก Contact Lens ยังไม่รองรับการปิดบังสำหรับภาษาไทย
+    ใช้สำหรับการสาธิตเท่านั้น
+  </div>
+  <div class="turns" id="turns"></div>
+  <div class="empty" id="empty">
+    รอสายเข้า<br><b>เปิดหน้านี้ไว้ข้าง CCP</b><br>
+    ระบบจะแสดงบทสนทนาทันทีเมื่อมีสายที่กำลังดำเนินอยู่
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  // Polling rather than a socket: Contact Lens exposes segments through a request API,
+  // and two seconds is comfortably inside the 5-10 second analysis delay, so a stream
+  // would add moving parts without arriving sooner.
+  var POLL_MS = 2000;
+  var turnsEl = document.getElementById("turns");
+  var emptyEl = document.getElementById("empty");
+  var dotEl = document.getElementById("dot");
+  var stateEl = document.getElementById("state");
+  var rendered = 0;
+  var currentContact = null;
+
+  var LABEL = {
+    live: "กำลังบันทึก", waiting: "รอบทสนทนา",
+    idle: "ไม่มีสายที่ดำเนินอยู่", error: "เกิดข้อผิดพลาด"
+  };
+
+  function clock(ms) {
+    var total = Math.max(0, Math.round(ms / 1000));
+    return String(Math.floor(total / 60)).padStart(2, "0") + ":" +
+           String(total % 60).padStart(2, "0");
+  }
+
+  function setState(status) {
+    dotEl.className = "dot " + (status === "live" ? "live"
+      : status === "error" ? "error" : status === "waiting" ? "waiting" : "");
+    stateEl.textContent = LABEL[status] || status;
+  }
+
+  function render(turns) {
+    // Append only what is new. Re-rendering the list would restart every entry
+    // animation and fight the reader's scroll position on each poll.
+    for (var i = rendered; i < turns.length; i++) {
+      var turn = turns[i];
+      var row = document.createElement("div");
+      row.className = "turn";
+      row.setAttribute("data-role", turn.role);
+      var who = document.createElement("div");
+      who.className = "who";
+      who.innerHTML = "<span></span><span class='at'></span>";
+      who.firstChild.textContent = turn.speaker;
+      who.lastChild.textContent = clock(turn.offsetMillis);
+      var said = document.createElement("div");
+      said.className = "said";
+      said.textContent = turn.text;
+      row.appendChild(who);
+      row.appendChild(said);
+      turnsEl.appendChild(row);
+    }
+    if (turns.length > rendered) {
+      rendered = turns.length;
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    }
+    emptyEl.style.display = turns.length ? "none" : "";
+  }
+
+  function poll() {
+    fetch("/transcript", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (data) {
+        // A new call resets the panel, otherwise turns from the previous one linger.
+        if (data.contactId !== currentContact) {
+          currentContact = data.contactId;
+          turnsEl.innerHTML = "";
+          rendered = 0;
+        }
+        setState(data.status);
+        render(data.turns || []);
+      })
+      .catch(function () { setState("error"); })
+      .then(function () { window.setTimeout(poll, POLL_MS); });
+  }
+
+  poll();
+})();
+</script>
+</body>
+</html>

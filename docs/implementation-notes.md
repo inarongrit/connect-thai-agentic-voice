@@ -1497,3 +1497,25 @@ handed to a person.
 - A `Wait` block passed validation and failed at runtime after 170ms, disconnecting
   callers 14 seconds after enqueue while the agent was being connected. Validation
   proves a flow will deploy, not that it will run.
+
+## Live transcript panel
+
+Amazon Connect has no live transcript in the agent workspace. The CCP shows one only
+during After Contact Work, and the documented route to a mid-call transcript is to
+consume Contact Lens real-time analysis and render it yourself. `web/transcript.html`
+polls `GET /transcript` every two seconds, which is comfortably inside the 5-10 second
+analysis delay, so a streaming transport would add moving parts without arriving sooner.
+
+The panel follows whatever call the agent is on, discovered through GetCurrentUserData,
+so nobody has to paste a contact id mid-demo.
+
+Access control is the important part, because the payload is the verbatim content of a
+phone call and Contact Lens cannot redact Thai in any mode. The endpoint sits behind the
+same CloudFront origin-secret check as the outbound trigger: CloudFront injects
+X-FSI-Origin-Key and the Lambda compares it with `hmac.compare_digest`, failing closed
+when the secret is unset. Verified after deployment -- the path returns JSON through the
+distribution and the API host answers 403 directly.
+
+Like the rest of the main path, `fsi-live-transcript`, its API route and the CloudFront
+behaviour were created outside CloudFormation, so they are subject to the same
+resource-import caveat recorded above.
