@@ -147,6 +147,50 @@
         }
       },
       "Transitions": {
+        "NextAction": "inbound-recognised",
+        "Errors": [
+          {
+            "NextAction": "inbound-recognised",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "inbound-recognised",
+      "Type": "Compare",
+      "Parameters": {
+        "ComparisonValue": "$.Attributes.profileFound"
+      },
+      "Transitions": {
+        "NextAction": "inbound-greeting",
+        "Errors": [
+          {
+            "NextAction": "inbound-greeting",
+            "ErrorType": "NoMatchingCondition"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "inbound-greet-by-name",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "true"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "inbound-greet-by-name",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "$.Attributes.profileGreeting"
+      },
+      "Transitions": {
         "NextAction": "inbound-greeting",
         "Errors": [
           {
@@ -161,7 +205,7 @@
       "Identifier": "inbound-greeting",
       "Type": "MessageParticipant",
       "Parameters": {
-        "Text": "$.Attributes.profileGreeting โทรเข้าระบบสาธิตเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"
+        "Text": "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของระบบสาธิตเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"
       },
       "Transitions": {
         "NextAction": "inbound-ask",

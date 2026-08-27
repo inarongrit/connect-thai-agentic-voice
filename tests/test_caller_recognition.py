@@ -75,12 +75,16 @@ class CallerRecognitionTests(unittest.TestCase):
         self.assertIn("สมชาย", result["profileGreeting"])
         self.assertIn("15,500", result["profileSummary"])
 
-    def test_an_unknown_caller_is_greeted_without_a_name(self):
-        """The normal case for an audience: no profile, and no apology for it."""
+    def test_an_unknown_caller_gets_no_name_greeting(self):
+        """The normal case for an audience. The flow then speaks its own greeting.
+
+        This returns an empty string rather than a generic greeting: the disclosures
+        live in the flow, so returning one here would have the caller greeted twice.
+        """
         with patch.object(MODULE.boto3, "client", return_value=profiles_client([])):
             result = MODULE.handler(lookup_event(UNKNOWN_NUMBER), None)
         self.assertEqual(result["profileFound"], "false")
-        self.assertIn("สวัสดี", result["profileGreeting"])
+        self.assertEqual(result["profileGreeting"], "")
         self.assertEqual(result["profileSummary"], "")
 
     def test_a_lookup_failure_is_not_fatal(self):
@@ -90,7 +94,8 @@ class CallerRecognitionTests(unittest.TestCase):
         with patch.object(MODULE.boto3, "client", return_value=Broken()):
             result = MODULE.handler(lookup_event(KNOWN_NUMBER), None)
         self.assertEqual(result["profileFound"], "false")
-        self.assertTrue(result["profileGreeting"].strip())
+        self.assertEqual(result["profileGreeting"], "",
+                         "a failed lookup names nobody; the flow still discloses")
 
     def test_no_number_means_no_lookup(self):
         with patch.object(MODULE.boto3, "client") as client:
@@ -103,6 +108,13 @@ class CallerRecognitionTests(unittest.TestCase):
         with patch.object(MODULE.boto3, "client", return_value=profiles_client([KNOWN])):
             result = MODULE.handler(lookup_event(KNOWN_NUMBER), None)
         self.assertFalse(re.search(r"[A-Za-z]{3,}", result["profileGreeting"]))
+
+    def test_a_known_caller_is_named_without_repeating_a_greeting(self):
+        """The flow greets and discloses; this only adds the name."""
+        with patch.object(MODULE.boto3, "client", return_value=profiles_client([KNOWN])):
+            result = MODULE.handler(lookup_event(KNOWN_NUMBER), None)
+        self.assertNotIn("ผู้ช่วยอัตโนมัติ", result["profileGreeting"])
+        self.assertIn("สมชาย", result["profileGreeting"])
 
 
 class AccountServicingTests(unittest.TestCase):

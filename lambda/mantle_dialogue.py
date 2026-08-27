@@ -220,10 +220,16 @@ def _profile_fields(phone):
 
 
 def _profile_greeting(fields):
-    """Greet a recognised caller by name; stay neutral when unrecognised."""
-    if fields.get("firstName"):
-        return f"สวัสดีคุณ{fields['firstName']}ค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติค่ะ"
-    return "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติค่ะ"
+    """Name the caller when recognised, and say nothing when not.
+
+    This deliberately carries no disclosure. An earlier version put the assistant's
+    identity and the automated-voice notice here, and when the flow's invocation of
+    this Lambda was denied the attribute came back empty -- so a real caller heard a
+    greeting with neither disclosure in it. Anything a caller must be told belongs in
+    the flow's static text, which cannot fail.
+    """
+    first = fields.get("firstName")
+    return f"สวัสดีคุณ{first}ค่ะ" if first else ""
 
 
 def _profile_summary(fields):

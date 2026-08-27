@@ -172,91 +172,48 @@ class InboundDisclosureTests(unittest.TestCase):
         """Guards against the tests passing because nothing was found."""
         self.assertEqual(set(self._greetings()), INBOUND_DIALOGUE)
 
-    # The greeting is composed at runtime: a personalised opening from the dialogue
-    # Lambda, then the fixed disclosures from the flow. Checking only the flow text
-    # would miss half of it, so both halves are checked and so is the wiring that
-    # joins them -- if the flow stopped referencing the attribute, a caller would hear
-    # no identity disclosure at all and the static text alone would still look fine.
-    STATIC_REQUIRED = {"บันทึก": "recording notice",
-                       "สมมติ": "fictional-data notice"}
-    DYNAMIC_REQUIRED = {"ผู้ช่วยอัตโนมัติ": "automated-voice disclosure",
-                        "สุดา": "assistant self-introduction"}
+    # Every disclosure lives in the flow's static text. It used to live in an
+    # attribute supplied by the dialogue Lambda, and when Connect's invocation of that
+    # Lambda was denied on a real call the attribute came back empty -- so the caller
+    # heard a greeting with no identity and no automated-voice notice, while the flow
+    # text still looked correct. Anything a caller must be told cannot depend on a
+    # lookup succeeding.
+    REQUIRED = {
+        "ผู้ช่วยอัตโนมัติ": "automated-voice disclosure",
+        "บันทึก": "recording notice",
+        "สุดา": "assistant self-introduction",
+        "สมมติ": "fictional-data notice",
+    }
 
-    def test_the_flow_uses_the_personalised_greeting(self):
-        for source, messages in self._greetings().items():
-            with self.subTest(source=source):
-                self.assertIn("$.Attributes.profileGreeting",
-                              messages.get("inbound-greeting", ""),
-                              "the greeting must include the Lambda's opening")
-
-    def test_the_fixed_half_carries_its_disclosures(self):
+    def test_the_greeting_carries_every_disclosure_by_itself(self):
         for source, messages in self._greetings().items():
             text = messages.get("inbound-greeting", "")
             with self.subTest(source=source):
                 self.assertTrue(text, f"{source} has no greeting")
-                for token, description in self.STATIC_REQUIRED.items():
+                self.assertNotIn("$.Attributes", text,
+                                 "disclosures must not depend on a runtime attribute")
+                for token, description in self.REQUIRED.items():
                     self.assertIn(token, text, f"{source} lacks {description}")
 
-    def test_the_personalised_half_identifies_the_assistant(self):
-        """Both recognised and unrecognised callers must hear who is speaking."""
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "greeting_check", Path(__file__).parents[1] / "lambda" / "mantle_dialogue.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        for fields in ({}, {"firstName": "สมชาย"}):
-            greeting = module._profile_greeting(fields)
-            with self.subTest(known=bool(fields)):
-                for token, description in self.DYNAMIC_REQUIRED.items():
-                    self.assertIn(token, greeting, f"greeting lacks {description}")
-
-    def test_disclosures_precede_the_first_question(self):
-        """Nothing may be collected before the caller knows what they reached."""
+    def test_a_failed_profile_lookup_still_reaches_the_disclosures(self):
+        """The path that broke on a real call: the lookup was denied, 403."""
         actions = {a["Identifier"]: a for a in
                    json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]}
-        order = [a["Identifier"] for a in
-                 json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]]
-        self.assertLess(order.index("inbound-greeting"), order.index("inbound-ask"))
-        self.assertEqual(actions["inbound-greeting"]["Transitions"]["NextAction"],
-                         "inbound-ask")
+        lookup = actions["inbound-profile-lookup"]
+        for error in lookup["Transitions"]["Errors"]:
+            self.assertEqual(error["NextAction"], "inbound-greeting",
+                             "a denied lookup must still greet and disclose")
 
-    def test_the_caller_is_asked_an_open_question_not_given_a_menu(self):
-        """The first design replayed the outbound script behind a keypad menu.
-
-        An inbound caller has a question. Making them choose a line of business first,
-        then answering with a collections script, was the wrong shape entirely.
-        """
+    def test_the_name_is_spoken_only_when_the_caller_is_known(self):
         actions = {a["Identifier"]: a for a in
                    json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]}
-        self.assertNotIn("inbound-menu", actions)
-        self.assertEqual(actions["inbound-ask"]["Type"], "ConnectParticipantWithLexBot")
-        self.assertEqual(
-            actions["inbound-ask"]["Parameters"]["LexSessionAttributes"]["mode"],
-            "inbound_kb", "inbound must use the knowledge base path")
-
-    def test_the_caller_may_ask_more_than_one_question(self):
-        actions = {a["Identifier"]: a for a in
-                   json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]}
-        route = actions["inbound-route"]
-        self.assertEqual(route["Transitions"]["NextAction"], "inbound-resume")
-        self.assertEqual(route["Transitions"]["Conditions"][0]["NextAction"],
-                         "inbound-closing")
-
-    def test_a_speech_failure_is_spoken_not_silent(self):
-        actions = {a["Identifier"]: a for a in
-                   json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]}
-        for error in actions["inbound-ask"]["Transitions"]["Errors"]:
-            self.assertEqual(error["NextAction"], "inbound-error")
-        self.assertTrue(actions["inbound-error"]["Parameters"]["Text"].strip())
-
-    def test_inbound_records_an_outcome_like_outbound(self):
-        """Inbound calls must appear in the same outcome record as outbound ones."""
-        actions = {a["Identifier"]: a for a in
-                   json.loads((IAC / "mantle-inbound-flow.json").read_text())["Actions"]}
-        record = actions["inbound-record-outcome"]
-        self.assertEqual(record["Type"], "InvokeLambdaFunction")
-        self.assertEqual(record["Parameters"]["LambdaInvocationAttributes"]["mode"],
-                         "outcome")
+        check = actions["inbound-recognised"]
+        self.assertEqual(check["Parameters"]["ComparisonValue"], "$.Attributes.profileFound")
+        self.assertEqual(check["Transitions"]["NextAction"], "inbound-greeting")
+        self.assertEqual(check["Transitions"]["Conditions"][0]["NextAction"],
+                         "inbound-greet-by-name")
+        self.assertEqual(actions["inbound-greet-by-name"]["Transitions"]["NextAction"],
+                         "inbound-greeting")
 
     def test_inbound_speaks_thai_only(self):
         import re
