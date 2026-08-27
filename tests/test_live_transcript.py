@@ -144,5 +144,63 @@ class PanelTests(unittest.TestCase):
         self.assertNotIn("innerHTML = turn", self.PANEL)
 
 
+
+class WaitingVersusFailureTests(unittest.TestCase):
+    """A call with no analysis yet is not a fault.
+
+    A finished call stayed attached to the agent for an hour, and because it predated
+    real-time analytics the lookup raised ResourceNotFoundException. Every exception was
+    being reported as an error, so the panel showed เกิดข้อผิดพลาด on a healthy system.
+    """
+
+    def test_no_analysis_yet_is_a_waiting_state(self):
+        class NotFound(Exception):
+            pass
+        NotFound.__name__ = "ResourceNotFoundException"
+        with patch.object(MODULE, "_lens") as lens:
+            lens.list_realtime_contact_analysis_segments.side_effect = NotFound(
+                "Real-time contact analysis not found.")
+            result = body(MODULE.handler(request(contact="c1"), None))
+        self.assertEqual(result["status"], "waiting")
+        self.assertIsNone(result["detail"])
+
+    def test_a_genuine_failure_is_still_an_error(self):
+        with patch.object(MODULE, "_lens") as lens:
+            lens.list_realtime_contact_analysis_segments.side_effect = RuntimeError("boom")
+            result = body(MODULE.handler(request(contact="c1"), None))
+        self.assertEqual(result["status"], "error")
+
+    def test_a_contact_in_an_active_state_is_chosen(self):
+        data = {"UserDataList": [{"Contacts": [
+            {"ContactId": "old", "ContactState": "ENDED"},
+            {"ContactId": "live", "ContactState": "CONNECTED"}]}]}
+        with patch.object(MODULE, "_connect") as connect:
+            connect.get_current_user_data.return_value = data
+            self.assertEqual(MODULE._active_contact(), "live")
+
+    def test_leftover_contacts_are_ignored_when_several_are_attached(self):
+        """Following a finished call reports on the wrong conversation."""
+        data = {"UserDataList": [{"Contacts": [
+            {"ContactId": "old", "ContactState": None},
+            {"ContactId": "older", "ContactState": None}]}]}
+        with patch.object(MODULE, "_connect") as connect:
+            connect.get_current_user_data.return_value = data
+            self.assertIsNone(MODULE._active_contact())
+
+    def test_a_single_attached_contact_is_still_followed(self):
+        """An unfamiliar state should not blind the panel entirely."""
+        data = {"UserDataList": [{"Contacts": [{"ContactId": "one", "ContactState": None}]}]}
+        with patch.object(MODULE, "_connect") as connect:
+            connect.get_current_user_data.return_value = data
+            self.assertEqual(MODULE._active_contact(), "one")
+
+
+class PanelDiagnosticTests(unittest.TestCase):
+    PANEL = (ROOT / "web" / "transcript.html").read_text()
+
+    def test_the_panel_shows_the_reason_for_a_state(self):
+        self.assertIn('id="detail"', self.PANEL)
+        self.assertIn("detailEl.textContent = data.detail", self.PANEL)
+
 if __name__ == "__main__":
     unittest.main()

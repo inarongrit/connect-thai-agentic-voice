@@ -77,6 +77,10 @@
   .at{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:rgba(234,255,244,.4); letter-spacing:.06em}
   .said{font-size:16px; line-height:1.62; word-break:break-word}
 
+  .detail{
+    flex-basis:100%; font-family:"IBM Plex Mono",monospace; font-size:10.5px;
+    color:rgba(255,199,110,.72); letter-spacing:.03em; word-break:break-word;
+  }
   .empty{
     max-width:520px; margin:14vh auto 0; text-align:center;
     color:rgba(234,255,244,.5); font-size:15px; line-height:1.8;
@@ -97,6 +101,7 @@
     <div class="sub">Contact Lens real-time · ภาษาไทย · th-TH</div>
   </div>
   <div class="state"><span class="dot" id="dot"></span><span id="state">กำลังเชื่อมต่อ</span></div>
+  <div class="detail" id="detail" hidden></div>
 </header>
 
 <main>
@@ -180,6 +185,11 @@
           rendered = 0;
         }
         setState(data.status);
+        // Showing the reason turns an opaque state into something diagnosable while
+        // standing in front of an audience.
+        var detailEl = document.getElementById("detail");
+        detailEl.textContent = data.detail || "";
+        detailEl.hidden = !data.detail;
         render(data.turns || []);
       })
       .catch(function () { setState("error"); })

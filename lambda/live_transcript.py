@@ -53,12 +53,23 @@ def _authorised(event):
     return bool(ORIGIN_SECRET) and hmac.compare_digest(supplied, ORIGIN_SECRET)
 
 
+# States that mean the agent is genuinely on a call. A contact can linger on an agent
+# after it ends -- one stayed attached for an hour with no state at all -- and following
+# it means the panel reports on a call that finished.
+LIVE_STATES = {"CONNECTING", "CONNECTED", "ON_HOLD", "ENDED", "MISSED", "ERROR",
+               "CONNECTED_ONHOLD", "INCOMING", "PENDING"}
+ACTIVE_STATES = {"CONNECTING", "CONNECTED", "ON_HOLD", "CONNECTED_ONHOLD", "INCOMING"}
+
+
 def _active_contact():
     """The call the agent is on right now.
 
     The panel is opened beside the CCP during a demo, so it should follow whatever call
     is live without anyone pasting a contact id. Returns None when the agent is idle,
     which is the ordinary state between calls rather than an error.
+
+    A contact still attached but not in an active state is skipped: a finished call stayed
+    on the agent long after it ended, and the panel kept reporting an error about it.
     """
     if not (INSTANCE_ID and ROUTING_PROFILE_ID):
         return None
@@ -70,11 +81,14 @@ def _active_contact():
     except Exception as exc:
         print(f"agent lookup failed: {type(exc).__name__}: {exc}")
         return None
-    for user in data.get("UserDataList", []):
-        for contact in user.get("Contacts", []):
-            if contact.get("ContactId"):
-                return contact["ContactId"]
-    return None
+    candidates = [c for user in data.get("UserDataList", [])
+                  for c in user.get("Contacts", []) if c.get("ContactId")]
+    for contact in candidates:
+        if str(contact.get("ContactState", "")).upper() in ACTIVE_STATES:
+            return contact["ContactId"]
+    # Nothing in an active state. Fall back to a single attached contact so a state this
+    # code has not seen still shows something, but ignore leftovers when there are several.
+    return candidates[0]["ContactId"] if len(candidates) == 1 else None
 
 
 def _segments(contact_id):
@@ -93,6 +107,15 @@ def _segments(contact_id):
         try:
             page = _lens.list_realtime_contact_analysis_segments(**request)
         except Exception as exc:
+            # "Real-time contact analysis not found" means this call has no analysis --
+            # either it has not started producing segments, or it predates real-time
+            # analytics being enabled. That is a waiting state, not a failure, and
+            # reporting it as an error left the panel showing เกิดข้อผิดพลาด on a
+            # perfectly healthy system.
+            if "ResourceNotFoundException" in type(exc).__name__ or \
+                    "not found" in str(exc).lower():
+                print(f"no real-time analysis yet for {contact_id}")
+                return turns, None
             print(f"segment fetch failed: {type(exc).__name__}: {exc}")
             return turns, str(exc)[:160]
         for segment in page.get("Segments", []):
