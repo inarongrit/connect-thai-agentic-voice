@@ -145,10 +145,16 @@ INBOUND_KB_MODE = "inbound_kb"
 QCONNECT_ASSISTANT_ID = os.environ.get("QCONNECT_ASSISTANT_ID", "")
 
 # Retrieval returns whole documents, and an off-topic question still matches
-# something: "what is the weather today" scored 0.426 against the securities FAQ,
-# while genuine questions scored 0.63 to 0.70. Below this floor the honest answer is
-# that we do not know, which is what the handoff is for.
-KB_SCORE_FLOOR = float(os.environ.get("KB_SCORE_FLOOR", "0.55"))
+# something, so a floor decides whether we actually know the answer.
+#
+# Measured over nine questions against the real content:
+#   on-topic  0.518 0.519 0.541 0.580 0.613 0.620
+#   off-topic 0.409 0.426 0.446
+# The boundary is therefore between 0.446 and 0.518, and 0.48 sits in it with roughly
+# equal margin either side. An earlier value of 0.55, guessed from two samples, sat
+# above three legitimate questions -- asking what time a branch opens was answered
+# with "I do not know" and a transfer.
+KB_SCORE_FLOOR = float(os.environ.get("KB_SCORE_FLOOR", "0.48"))
 
 # Thai is written without spaces between words, so word tokenisation would need a
 # dictionary. Character trigrams need none and are enough to pick the right section

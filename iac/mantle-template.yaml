@@ -103,10 +103,9 @@ Resources:
           TERRA_MODEL_ID: us.openai.gpt-5.6-terra
           MAX_TURNS: '10'
           QCONNECT_ASSISTANT_ID: !Ref QConnectAssistantId
-          # Off-topic questions still retrieve a document -- an unrelated question
-          # scored 0.426 against the securities FAQ while real ones scored 0.63 to
-          # 0.70 -- so answers below this are escalated instead of spoken.
-          KB_SCORE_FLOOR: '0.55'
+          # Measured boundary: on-topic questions scored 0.518 upward, off-topic ones
+          # 0.446 downward, so this sits between them. See the note in the Lambda.
+          KB_SCORE_FLOOR: '0.48'
           PROFILE_DOMAIN: !Ref CustomerProfilesDomain
       Code:
         ZipFile: |
@@ -257,10 +256,16 @@ Resources:
           QCONNECT_ASSISTANT_ID = os.environ.get("QCONNECT_ASSISTANT_ID", "")
 
           # Retrieval returns whole documents, and an off-topic question still matches
-          # something: "what is the weather today" scored 0.426 against the securities FAQ,
-          # while genuine questions scored 0.63 to 0.70. Below this floor the honest answer is
-          # that we do not know, which is what the handoff is for.
-          KB_SCORE_FLOOR = float(os.environ.get("KB_SCORE_FLOOR", "0.55"))
+          # something, so a floor decides whether we actually know the answer.
+          #
+          # Measured over nine questions against the real content:
+          #   on-topic  0.518 0.519 0.541 0.580 0.613 0.620
+          #   off-topic 0.409 0.426 0.446
+          # The boundary is therefore between 0.446 and 0.518, and 0.48 sits in it with roughly
+          # equal margin either side. An earlier value of 0.55, guessed from two samples, sat
+          # above three legitimate questions -- asking what time a branch opens was answered
+          # with "I do not know" and a transfer.
+          KB_SCORE_FLOOR = float(os.environ.get("KB_SCORE_FLOOR", "0.48"))
 
           # Thai is written without spaces between words, so word tokenisation would need a
           # dictionary. Character trigrams need none and are enough to pick the right section
