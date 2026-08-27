@@ -1369,6 +1369,20 @@ def _lex_response(event, attributes):
 
 
 def handler(event, context):
+    # This function answers to two callers with different event shapes. Lex sends
+    # sessionState.sessionAttributes; an Amazon Connect contact flow sends
+    # Details.Parameters and expects a flat map of strings back. The profile lookup is
+    # invoked by the flow, so reading only the Lex shape left its mode invisible: the
+    # request fell through into the dialogue path and the flow logged "The Lambda
+    # Function Returned An Error", with the caller hearing no name.
+    flow_parameters = (event.get("Details") or {}).get("Parameters") or {}
+    if flow_parameters:
+        if str(flow_parameters.get("mode", "")).lower() == PROFILE_LOOKUP_MODE:
+            return _handle_profile_lookup(flow_parameters)
+        # Anything else from a flow is a wiring mistake. Returning a flat map keeps the
+        # flow on its success branch so a caller is never dropped over it.
+        return {"profileFound": "false", "profileGreeting": "", "profileSummary": ""}
+
     attributes = dict(event.get("sessionState", {}).get("sessionAttributes") or {})
     scenario = str(attributes.get("scenario", "")).lower()
     if scenario not in SCENARIOS:
@@ -1379,9 +1393,6 @@ def handler(event, context):
     # Inbound callers ask questions, so they take the knowledge base path rather than
     # the outbound script. Dispatched here, before any slot filling, because none of
     # the outbound stages apply to someone who dialled in with a question.
-    if str(attributes.get("mode", "")).lower() == PROFILE_LOOKUP_MODE:
-        return _handle_profile_lookup(attributes)
-
     if str(attributes.get("mode", "")).lower() == INBOUND_KB_MODE:
         state["inboundAttributes"] = {
             k: attributes.get(k, "") for k in

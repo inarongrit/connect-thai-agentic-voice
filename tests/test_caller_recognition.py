@@ -45,12 +45,17 @@ UNKNOWN_NUMBER = "+" + "66" + "8" + "9" * 8
 
 
 def lookup_event(number):
-    return {"inputTranscript": "",
-            "sessionState": {"sessionAttributes": {"mode": "profile_lookup",
-                                                   "callerNumber": number,
-                                                   "scenario": "bank"},
-                             "intent": {"name": "FallbackIntent",
-                                        "state": "ReadyForFulfillment"}}}
+    """The shape an Amazon Connect contact flow sends, not the Lex shape.
+
+    These fixtures previously used the Lex event, so they passed while the deployed
+    function could not see the mode at all: a real call logged "The Lambda Function
+    Returned An Error" and the caller heard no name. A fixture that does not match what
+    the platform sends proves nothing.
+    """
+    return {"Name": "ContactFlowEvent",
+            "Details": {"ContactData": {"ContactId": "test-contact"},
+                        "Parameters": {"mode": "profile_lookup",
+                                       "callerNumber": number}}}
 
 
 def servicing_event(transcript, **profile):
@@ -136,6 +141,31 @@ class CallerRecognitionTests(unittest.TestCase):
                           return_value=profiles_client([automatic])):
             result = MODULE.handler(lookup_event(KNOWN_NUMBER), None)
         self.assertEqual(result["profileFound"], "false")
+
+
+class EventShapeTests(unittest.TestCase):
+    """Both callers of this function must keep working."""
+
+    def test_a_flow_event_returns_a_flat_map_of_strings(self):
+        """Connect rejects nested values in a Lambda's return."""
+        with patch.object(MODULE.boto3, "client", return_value=profiles_client([KNOWN])):
+            result = MODULE.handler(lookup_event(KNOWN_NUMBER), None)
+        self.assertTrue(all(isinstance(v, str) for v in result.values()), result)
+
+    def test_an_unrecognised_flow_mode_does_not_drop_the_caller(self):
+        event = {"Name": "ContactFlowEvent",
+                 "Details": {"ContactData": {}, "Parameters": {"mode": "typo"}}}
+        result = MODULE.handler(event, None)
+        self.assertEqual(result["profileFound"], "false")
+
+    def test_the_lex_path_is_unaffected(self):
+        event = {"inputTranscript": "ไม่สนใจครับ",
+                 "sessionState": {"sessionAttributes": {"scenario": "insurance",
+                                                        "mantleState": "{}"},
+                                  "intent": {"name": "FallbackIntent",
+                                             "state": "ReadyForFulfillment"}}}
+        response = MODULE.handler(event, None)
+        self.assertIn("sessionState", response)
 
 class AccountServicingTests(unittest.TestCase):
     def test_a_balance_question_is_answered_from_the_profile(self):
