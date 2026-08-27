@@ -12,13 +12,27 @@ and with evidence produced after every call.
 ## What it does
 
 Three outbound financial-services scenarios, each reachable from a browser over
-WebRTC or as a real phone call to a Thai number:
+WebRTC or by dialling a US toll-free number. There is no Thai number: Amazon Connect
+had none available to claim in this region, and US toll-free generally cannot be
+dialled from outside the US, so callers in Thailand use the WebRTC path.
 
 | Scenario | Behaviour |
 |---|---|
 | **Loan collection** | Verifies identity before disclosing anything, offers full / partial / instalment, reads the amount back in spoken Thai, commits only on explicit confirmation |
 | **Insurance** | Discovers one coverage need and the customer's own priority, shares one approved fact, then asks permission for a licensed-agent handoff |
 | **Brokerage** | Discovers learning topic and experience before offering a tailored seminar or a licensed consultation — generic interest never books or closes |
+
+## Inbound, and what happens when the assistant cannot help
+
+| Capability | Behaviour |
+|---|---|
+| **Live handoff** | Six referral outcomes transfer to a real agent, who hears a Thai whisper naming why the call was escalated and the discovery already gathered. `do_not_contact` is excluded: a contact ban is honoured by ending the call, not by connecting a person. |
+| **Inbound questions** | A caller dials in and asks in Thai. Answers are retrieved from a Thai knowledge base and read back with a citation. An ungroundable question is not guessed at — the caller is told so and handed to a person. |
+| **Caller recognition** | A known caller is greeted by name from Customer Profiles, and the agent sees their details on transfer. An unknown caller gets a neutral greeting and no apology. |
+| **Account servicing** | Balance and due date come from the caller's profile, never from the knowledge base, because a general FAQ has no idea what a specific caller owes. A deferral request is not granted by a machine; it goes to a person with the request recorded. |
+
+Inbound and outbound share one dialogue, one outcome record and one handoff path, so
+the inbound experience cannot drift away from the tested outbound one.
 
 ## What makes it more than a phone chatbot
 

@@ -1441,3 +1441,59 @@ Bringing the unmanaged resources under management is a CloudFormation resource-i
 exercise: import them into a stack with matching logical ids, verify an empty change
 set, and only then convert to constructs. That is deliberately not attempted while a
 demo depends on them.
+
+## Inbound: decisions and the measurements behind them
+
+### Inbound does not reuse the outbound script
+
+The first inbound flow transferred straight into the outbound dialogue. It worked, and
+it was wrong: a caller who dialled in was asked whether they were the person we had
+called, then read a balance they had not asked about. Convenience of implementation is
+not a reason to give a caller the wrong conversation. Inbound now answers questions and
+shares only the parts that genuinely apply to both directions -- outcome recording and
+the handoff chain.
+
+### Grounding rests on the retrieval score, not on text matching
+
+Two mechanisms were candidates for deciding whether a question can be answered.
+
+Character trigram overlap between the question and a document section, measured against
+the real content: on-topic 0.143 to 1.000, off-topic 0.100 to 0.200. The ranges overlap,
+so no threshold works. It is still used, but only to choose which section of an
+already-relevant document to read aloud, which it does well.
+
+Retrieval relevance score, measured over nine questions: on-topic 0.518 to 0.620,
+off-topic 0.409 to 0.446. Clean separation, so this is the gate. The floor sits at 0.48,
+between the two ranges.
+
+An earlier floor of 0.55 was picked from the first two observations to hand. It looked
+reasonable and rejected three legitimate questions -- what time a branch opens, what
+time the market opens -- answering each with "I do not know" and a needless transfer.
+Thresholds set from convenient samples degrade quietly.
+
+### Account questions never reach the knowledge base
+
+Balance and due date come from Customer Profiles. A general FAQ has no idea what a
+particular caller owes, so answering an account question from it would produce a
+confident wrong answer. When the caller is not recognised they are told plainly, which
+is not grounds for a transfer.
+
+A deferral request is not answered at all. It changes the account, so it is recorded and
+handed to a person.
+
+### Things only the live system revealed
+
+- Thai retrieval works, and cross-lingually, but returns nothing for about a minute
+  after ingestion. The first probe looked exactly like a language limitation.
+- The IAM resource for `wisdom:CreateSession` is the assistant ARN with a trailing
+  wildcard, not `session/<id>/*`. The policy simulator reported `implicitDeny` for both
+  shapes without indicating which was right.
+- A blanket `except` around the lookup turned that AccessDenied into "I have no
+  information" for the caller: a permissions bug wearing the costume of an empty
+  knowledge base. Failures are now logged.
+- `CheckStaffing` is not a valid flow action type, and this instance's `Compare` accepts
+  only `$.Metrics.Contact.PositionInQueue`, so agent availability is not detectable
+  in-flow. The hold is bounded instead.
+- A `Wait` block passed validation and failed at runtime after 170ms, disconnecting
+  callers 14 seconds after enqueue while the agent was being connected. Validation
+  proves a flow will deploy, not that it will run.
