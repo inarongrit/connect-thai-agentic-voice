@@ -49,7 +49,7 @@
         "Errors": [],
         "Conditions": [
           {
-            "NextAction": "queue-no-agent",
+            "NextAction": "queue-callback-number",
             "Condition": {
               "Operator": "Equals",
               "Operands": [
@@ -61,10 +61,67 @@
       }
     },
     {
-      "Identifier": "queue-no-agent",
+      "Identifier": "queue-callback-number",
+      "Type": "UpdateContactCallbackNumber",
+      "Parameters": {
+        "CallbackNumber": "$.CustomerEndpoint.Address"
+      },
+      "Transitions": {
+        "NextAction": "queue-create-callback",
+        "Errors": [
+          {
+            "NextAction": "queue-no-callback",
+            "ErrorType": "InvalidCallbackNumber"
+          },
+          {
+            "NextAction": "queue-no-callback",
+            "ErrorType": "CallbackNumberNotDialable"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "queue-create-callback",
+      "Type": "CreateCallbackContact",
+      "Parameters": {
+        "InitialCallDelaySeconds": "30",
+        "MaximumConnectionAttempts": "1",
+        "RetryDelaySeconds": "600"
+      },
+      "Transitions": {
+        "NextAction": "queue-callback-made",
+        "Errors": [
+          {
+            "NextAction": "queue-no-callback",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "queue-callback-made",
       "Type": "MessageParticipant",
       "Parameters": {
-        "Text": "ขออภัยค่ะ ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสาย จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"
+        "Text": "ขออภัยค่ะ ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสาย ระบบได้นัดให้เจ้าหน้าที่โทรกลับเบอร์นี้แล้วค่ะ ขอบคุณค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "queue-end",
+        "Errors": [
+          {
+            "NextAction": "queue-end",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "queue-no-callback",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "ขออภัยค่ะ ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสาย รบกวนติดต่อกลับอีกครั้งในภายหลังนะคะ ขอบคุณค่ะ"
       },
       "Transitions": {
         "NextAction": "queue-end",

@@ -296,7 +296,7 @@ class ThaiHandoffAudioTests(unittest.TestCase):
         self.assertIn("MessageParticipantIteratively", types)
         self.assertNotIn("Wait", types)
 
-    def test_hold_is_bounded_and_ends_with_the_callback_promise(self):
+    def test_hold_is_bounded(self):
         actions = {a["Identifier"]: a for a in QUEUE["Actions"]}
         loop = actions["queue-hold-loop"]
         interrupt = int(loop["Parameters"]["InterruptFrequencySeconds"])
@@ -306,8 +306,44 @@ class ThaiHandoffAudioTests(unittest.TestCase):
         self.assertLessEqual(interrupt, 180)
         self.assertEqual(loop["Transitions"]["Conditions"][0]["Condition"]["Operands"],
                          ["MessagesInterrupted"])
-        self.assertIn("ติดต่อกลับ", actions["queue-no-agent"]["Parameters"]["Text"])
         self.assertEqual(actions["queue-end"]["Type"], "DisconnectParticipant")
+
+    def test_an_unanswered_call_schedules_a_real_callback(self):
+        """The flow used to promise a callback and arrange nothing.
+
+        Every unanswered call therefore broke a promise made in Thai by the assistant.
+        The hold now leads to CreateCallbackContact, so the promise is only spoken when
+        a callback actually exists.
+        """
+        actions = {a["Identifier"]: a for a in QUEUE["Actions"]}
+        self.assertEqual(actions["queue-hold-loop"]["Transitions"]["Conditions"][0]["NextAction"],
+                         "queue-callback-number")
+        self.assertEqual(actions["queue-callback-number"]["Parameters"]["CallbackNumber"],
+                         "$.CustomerEndpoint.Address")
+        self.assertEqual(actions["queue-create-callback"]["Type"], "CreateCallbackContact")
+        self.assertEqual(actions["queue-callback-number"]["Transitions"]["NextAction"],
+                         "queue-create-callback")
+
+    def test_only_a_scheduled_callback_is_promised(self):
+        """A browser caller has no dialable number, so the promise must not be spoken."""
+        actions = {a["Identifier"]: a for a in QUEUE["Actions"]}
+        promised = actions["queue-callback-made"]["Parameters"]["Text"]
+        self.assertIn("โทรกลับ", promised)
+        unavailable = actions["queue-no-callback"]["Parameters"]["Text"]
+        self.assertNotIn("โทรกลับ", unavailable)
+        self.assertIn("ติดต่อกลับอีกครั้ง", unavailable)
+
+    def test_every_callback_failure_reaches_the_honest_message(self):
+        actions = {a["Identifier"]: a for a in QUEUE["Actions"]}
+        for ident in ("queue-callback-number", "queue-create-callback"):
+            with self.subTest(action=ident):
+                targets = {e["NextAction"] for e in actions[ident]["Transitions"]["Errors"]}
+                self.assertEqual(targets, {"queue-no-callback"})
+
+    def test_the_not_dialable_case_is_handled(self):
+        errors = {e["ErrorType"] for e in
+                  {a["Identifier"]: a for a in QUEUE["Actions"]}["queue-callback-number"]["Transitions"]["Errors"]}
+        self.assertEqual(errors, {"InvalidCallbackNumber", "CallbackNumberNotDialable"})
 
     def test_hold_audio_is_not_committed_as_an_account_specific_arn(self):
         loop = {a["Identifier"]: a for a in QUEUE["Actions"]}["queue-hold-loop"]
