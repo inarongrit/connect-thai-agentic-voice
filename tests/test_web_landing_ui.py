@@ -274,3 +274,149 @@ class ReadmePricingTests(unittest.TestCase):
 
     def test_the_reader_is_pointed_at_the_tool(self):
         self.assertIn("tools/cost_per_call.py --show-sources", self.README)
+
+
+class RuntimeArchitectureSlideTests(unittest.TestCase):
+    """Slide 5 explains what actually executes, not the tempting managed alternative.
+
+    The Connect instance contains FSI AI prompts and AI agents, so a customer could
+    reasonably assume those are the engine. They are not referenced by any flow. The
+    slide makes that boundary the visual centre of the story and must not drift into a
+    generic "AWS services" diagram that implies every resource is in the runtime path.
+    """
+
+    HTML = (Path(__file__).parents[1] / "web" / "index.html").read_text()
+    START = HTML.index('<section class="slide runtime-slide"')
+    END = HTML.index('</section></div><nav class="deck-nav"', START)
+    SLIDE = HTML[START:END]
+
+    def test_it_is_a_true_fifth_slide(self):
+        self.assertEqual(self.HTML.count('<section class="slide'), 5)
+        self.assertIn('"How It Actually Runs"', self.HTML)
+        self.assertIn('content:"05"', self.HTML)
+
+    def test_the_actual_engine_is_lambda(self):
+        self.assertIn("ACTUAL ENGINE", self.SLIDE)
+        self.assertIn("mantle_dialogue.py", self.SLIDE)
+        self.assertIn("1,554 LOC", self.SLIDE)
+        self.assertIn("67 FUNCTIONS", self.SLIDE)
+        self.assertIn("357 TESTS", self.SLIDE)
+
+    def test_prompts_are_explicitly_not_the_engine(self):
+        self.assertIn("PROMPTS ARE NOT THE ENGINE.", self.SLIDE)
+        self.assertIn("AI PROMPTS + AI AGENTS", self.SLIDE)
+        self.assertIn("0</i> FLOW REFERENCES", self.SLIDE)
+        self.assertIn("ไม่มี flow block ใดเรียกใช้", self.SLIDE)
+
+    def test_bedrock_is_described_as_classification_not_authorship(self):
+        self.assertIn("Classify, never author", self.SLIDE)
+        self.assertIn("NO AUTHORSHIP", self.SLIDE)
+        self.assertIn("โมเดลช่วย classify แต่ไม่แต่งคำตอบ", self.SLIDE)
+
+    def test_each_interactive_node_has_a_complete_readout(self):
+        import re
+        nodes = re.findall(r'<button[^>]*data-runtime-node[^>]*>', self.SLIDE)
+        self.assertEqual(len(nodes), 10)
+        for node in nodes:
+            with self.subTest(node=node[:80]):
+                self.assertIn('type="button"', node)
+                self.assertIn("data-title=", node)
+                self.assertIn("data-copy=", node)
+                self.assertIn("data-facts=", node)
+
+    def test_readout_uses_text_content_for_untrusted_data(self):
+        """No dataset value may become executable markup."""
+        script = self.HTML[self.HTML.index("(function(){const map=document.querySelector"):
+                           self.HTML.index("</script>", self.HTML.index("(function(){const map=document.querySelector"))]
+        self.assertIn("title.textContent=node.dataset.title", script)
+        self.assertIn("copy.textContent=node.dataset.copy", script)
+        self.assertNotIn("innerHTML", script)
+
+    def test_runtime_nodes_own_arrow_keys_instead_of_moving_the_deck(self):
+        self.assertIn(".runtime-node,.runtime-core", self.HTML)
+        self.assertIn('["ArrowDown","ArrowRight","ArrowUp","ArrowLeft"]', self.HTML)
+
+    def test_glitch_effect_does_not_repeat_the_heading_for_screen_readers(self):
+        """Pseudo-element text appeared as two extra headings in the first render."""
+        self.assertEqual(self.SLIDE.count('id="runtime-title"'), 1)
+        self.assertNotIn("data-glitch=", self.SLIDE)
+        self.assertNotIn("content:attr(data-glitch)", self.HTML)
+
+    def test_mobile_layout_has_an_explicit_single_column_fallback(self):
+        self.assertIn("@media(max-width:560px){.runtime-head", self.HTML)
+        self.assertIn(".runtime-services{grid-template-columns:1fr", self.HTML)
+
+    def test_the_old_test_count_is_gone_from_the_deck(self):
+        self.assertNotIn("336 regression tests", self.HTML)
+        self.assertIn("357 regression tests", self.HTML)
+
+
+class UnifiedCyberpunkThemeTests(unittest.TestCase):
+    """Slides 1–4 and the PSTN page share slide 5's tactical visual language.
+
+    This is intentionally tested as shared primitives rather than screenshots: a deck
+    can look coherent today and quietly drift back to green rounded cards one component
+    at a time. Cyan signal, magenta boundary, mono telemetry, scanlines and clipped
+    corners are the vocabulary that holds the pages together.
+    """
+
+    ROOT = Path(__file__).parents[1]
+    LANDING = (ROOT / "web" / "index.html").read_text()
+    PSTN = (ROOT / "web" / "call.html").read_text()
+
+    def test_both_pages_load_the_monospace_telemetry_face(self):
+        for page in (self.LANDING, self.PSTN):
+            with self.subTest(page="landing" if page is self.LANDING else "pstn"):
+                self.assertIn("IBM+Plex+Mono", page)
+                self.assertIn('"IBM Plex Mono",monospace', page)
+
+    def test_slides_one_to_four_have_cyan_and_magenta_signal_tokens(self):
+        self.assertIn("--cy-cyan:#5af5ff", self.LANDING)
+        self.assertIn("--cy-pink:#ff4fd8", self.LANDING)
+        self.assertIn(".slide:not(.runtime-slide)", self.LANDING)
+
+    def test_slides_one_to_four_have_scanlines(self):
+        self.assertIn(".slide:not(.runtime-slide)::after", self.LANDING)
+        self.assertIn("repeating-linear-gradient(0deg", self.LANDING)
+
+    def test_slide_one_console_uses_an_angular_tactical_frame(self):
+        self.assertIn(".slide:first-child .console", self.LANDING)
+        self.assertIn('content:"CONSOLE // PSTN + WEBRTC"', self.LANDING)
+        self.assertIn("clip-path:polygon(18px 0", self.LANDING)
+
+    def test_atlas_slides_use_the_same_hud_surface_and_corner_language(self):
+        self.assertIn(".atlas-board{border-color:var(--cy-line)!important", self.LANDING)
+        self.assertIn(".atlas-card{border-color:var(--cy-line)!important", self.LANDING)
+        self.assertIn(".atlas-evidence{box-shadow:inset 3px 0 0 var(--cy-pink)", self.LANDING)
+
+    def test_the_existing_rgb_theme_choice_still_changes_the_hud(self):
+        """The redesign must not make the earlier theme selector decorative."""
+        self.assertIn('html[data-theme="red-orbit"]{--cy-cyan:', self.LANDING)
+        self.assertIn('html[data-theme="blue-orbit"]{--cy-cyan:', self.LANDING)
+
+    def test_reduced_motion_still_disables_the_new_animations(self):
+        for page in (self.LANDING, self.PSTN):
+            self.assertIn("@media(prefers-reduced-motion:reduce)", page)
+            self.assertIn("animation:none!important", page)
+
+    def test_pstn_page_has_the_same_cyberpunk_tokens_and_scanlines(self):
+        self.assertIn("--cy-cyan:#5af5ff", self.PSTN)
+        self.assertIn("--cy-pink:#ff4fd8", self.PSTN)
+        self.assertIn("body::before", self.PSTN)
+        self.assertIn("PSTN SESSION // CONTACT TELEMETRY", self.PSTN)
+
+    def test_pstn_call_path_is_visually_angular_not_a_generic_card(self):
+        self.assertIn(".wave-shell", self.PSTN)
+        self.assertIn("AUDIO SPECTRUM // ENCRYPTED", self.PSTN)
+        self.assertIn("clip-path:polygon(12px 0", self.PSTN)
+
+    def test_pstn_behavior_is_unchanged_by_the_theme(self):
+        self.assertIn('const API="/call"', self.PSTN)
+        self.assertIn('sessionStorage.getItem("fsiActiveCall")', self.PSTN)
+        self.assertIn('setTimeout(poll,3500)', self.PSTN)
+        self.assertIn('FsiCostPopup.show', self.PSTN)
+
+    def test_both_pages_have_mobile_fallbacks(self):
+        self.assertIn("@media(max-width:900px)", self.LANDING)
+        self.assertIn("@media(max-width:620px)", self.PSTN)
+        self.assertIn(".wave-shell{clip-path:none}", self.PSTN)
