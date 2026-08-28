@@ -300,7 +300,7 @@ class RuntimeArchitectureSlideTests(unittest.TestCase):
         self.assertIn("mantle_dialogue.py", self.SLIDE)
         self.assertIn("1,554 LOC", self.SLIDE)
         self.assertIn("67 FUNCTIONS", self.SLIDE)
-        self.assertIn("357 TESTS", self.SLIDE)
+        self.assertIn("367 TESTS", self.SLIDE)
 
     def test_prompts_are_explicitly_not_the_engine(self):
         self.assertIn("PROMPTS ARE NOT THE ENGINE.", self.SLIDE)
@@ -347,8 +347,8 @@ class RuntimeArchitectureSlideTests(unittest.TestCase):
         self.assertIn(".runtime-services{grid-template-columns:1fr", self.HTML)
 
     def test_the_old_test_count_is_gone_from_the_deck(self):
-        self.assertNotIn("336 regression tests", self.HTML)
-        self.assertIn("357 regression tests", self.HTML)
+        self.assertNotIn("357 regression tests", self.HTML)
+        self.assertIn("367 regression tests", self.HTML)
 
 
 class UnifiedCyberpunkThemeTests(unittest.TestCase):
@@ -420,3 +420,65 @@ class UnifiedCyberpunkThemeTests(unittest.TestCase):
         self.assertIn("@media(max-width:900px)", self.LANDING)
         self.assertIn("@media(max-width:620px)", self.PSTN)
         self.assertIn(".wave-shell{clip-path:none}", self.PSTN)
+
+
+class CyberpunkQrPageTests(unittest.TestCase):
+    """The QR page may look like a HUD, but the code itself stays boring and scannable.
+
+    Decorative overlays, low-contrast backgrounds and animated scan lines across a QR
+    all make a poster memorable for the wrong reason. The targeting system therefore
+    surrounds a plain black code in a pure-white quiet zone and never covers it.
+    """
+
+    QR = (Path(__file__).parents[1] / "web" / "qr.html").read_text()
+
+    def test_deployment_placeholder_and_visible_fallback_remain(self):
+        self.assertGreaterEqual(self.QR.count("__DEMO_DOMAIN__"), 2)
+        self.assertIn("https://__DEMO_DOMAIN__/", self.QR)
+
+    def test_generator_still_requests_a_high_resolution_code(self):
+        self.assertIn("size=600x600", self.QR)
+        self.assertIn('width="600" height="600"', self.QR)
+
+    def test_the_code_has_a_pure_white_quiet_zone(self):
+        self.assertIn(".qr{", self.QR)
+        self.assertIn("background:#fff; padding:24px", self.QR)
+        self.assertIn(".qr{padding:20px}", self.QR)
+
+    def test_nothing_decorative_is_inside_the_qr_housing(self):
+        start = self.QR.index('<div class="qr">')
+        end = self.QR.index("</div>", start)
+        housing = self.QR[start:end]
+        self.assertEqual(housing.count("<img"), 1)
+        for forbidden in ("corner", "scan", "::before", "::after"):
+            self.assertNotIn(forbidden, housing)
+
+    def test_the_reticle_explicitly_sits_below_the_code(self):
+        self.assertIn(".qr{\n  position:relative; z-index:3", self.QR)
+        self.assertIn("Nothing overlays the code itself", self.QR)
+
+    def test_the_page_uses_the_shared_cyberpunk_vocabulary(self):
+        for token in ("--cyan:#5af5ff", "--pink:#ff4fd8", "IBM+Plex+Mono",
+                      "repeating-linear-gradient", "DEMO ACCESS NODE · ONLINE"):
+            with self.subTest(token=token):
+                self.assertIn(token, self.QR)
+
+    def test_old_copy_is_gone_and_new_instruction_is_present(self):
+        self.assertNotIn("ให้ <em>AI</em> โทรหาคุณ", self.QR)
+        self.assertNotIn("สแกนเลย", self.QR)
+        self.assertNotIn("พูดไทยได้จริง", self.QR)
+        self.assertIn("SCAN // CONNECT", self.QR)
+        self.assertIn("SPEAK THAI", self.QR)
+        self.assertIn("สแกนเพื่อทดลอง AI เสียงไทย", self.QR)
+
+    def test_mobile_reticle_does_not_create_horizontal_overflow(self):
+        """The rotating square expanded scroll width from 390 to 435 pixels."""
+        self.assertIn(".target::after{inset:4px;transform:none;animation:targetPulse", self.QR)
+
+    def test_reduced_motion_and_forced_colours_are_supported(self):
+        self.assertIn("@media(prefers-reduced-motion:reduce)", self.QR)
+        self.assertIn("@media(forced-colors:active)", self.QR)
+        self.assertIn("forced-color-adjust:none", self.QR)
+
+    def test_the_page_is_not_indexed(self):
+        self.assertIn('name="robots" content="noindex,nofollow"', self.QR)

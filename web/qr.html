@@ -2,36 +2,186 @@
 <html lang="th">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#01060b">
+<meta name="description" content="สแกนเพื่อทดลอง Amazon Connect Agentic Voice ภาษาไทย">
+<meta name="robots" content="noindex,nofollow">
 <title>Scan to Try — FSI Voice AI Demo</title>
-<link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;500;700&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='3' width='26' height='26' rx='2' fill='%2301060b' stroke='%235af5ff'/%3E%3Cpath d='M8 8h6v6H8zm10 0h6v6h-6zM8 18h6v6H8zm10 0h2v2h-2zm4 0h2v6h-6v-2h4z' fill='%23ff4fd8'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Thai:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: 'Prompt', sans-serif; background: #0d1421; color: #f4efe6;
-    min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
-    text-align: center; padding: 40px;
-    background-image: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(201,169,97,.16), transparent);
-  }
-  .eyebrow { font-weight: 300; letter-spacing: .35em; text-transform: uppercase; font-size: .85rem; color: #c9a961; margin-bottom: 20px; }
-  h1 { font-weight: 700; font-size: clamp(2rem, 5vw, 3.4rem); line-height: 1.3; margin-bottom: 10px; }
-  h1 em { font-style: normal; color: #e8c87e; }
-  p { font-weight: 300; color: #8a93a3; font-size: 1.2rem; margin-bottom: 44px; }
-  .qr {
-    background: #f4efe6; padding: 24px; border-radius: 8px;
-    box-shadow: 0 0 0 1px rgba(201,169,97,.4), 0 24px 64px rgba(0,0,0,.5);
-  }
-  .qr img { display: block; width: 300px; height: 300px; }
-  .url { margin-top: 28px; color: #c9a961; font-weight: 300; font-size: 1rem; letter-spacing: .05em; }
+:root{
+  --cyan:#5af5ff; --cyan-dim:rgba(90,245,255,.15);
+  --pink:#ff4fd8; --pink-dim:rgba(255,79,216,.12);
+  --amber:#ffc45f; --paper:#effdff; --muted:rgba(203,235,238,.56);
+  --line:rgba(90,245,255,.22); --bg:#01060b; --panel:rgba(3,15,22,.88);
+}
+*{box-sizing:border-box}
+html,body{min-height:100%}
+body{
+  margin:0; min-height:100dvh; overflow-x:hidden; color:var(--paper);
+  background:
+    radial-gradient(circle at 50% 42%,rgba(17,187,204,.13),transparent 27%),
+    radial-gradient(circle at 88% 14%,rgba(255,79,216,.075),transparent 27%),
+    linear-gradient(145deg,#010407,var(--bg) 58%,#03040a);
+  font-family:"IBM Plex Sans Thai",sans-serif;
+  display:grid; grid-template-rows:auto minmax(0,1fr) auto;
+  isolation:isolate;
+}
+body::before{
+  content:""; position:fixed; inset:0; z-index:-2; pointer-events:none; opacity:.5;
+  background:
+    repeating-linear-gradient(0deg,transparent 0 3px,rgba(90,245,255,.025) 3px 4px),
+    linear-gradient(rgba(90,245,255,.032) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(90,245,255,.032) 1px,transparent 1px);
+  background-size:auto,42px 42px,42px 42px;
+}
+body::after{
+  content:""; position:fixed; left:0; right:0; top:-16%; height:16%; z-index:-1;
+  pointer-events:none; background:linear-gradient(transparent,rgba(90,245,255,.06),transparent);
+  animation:viewportScan 7s linear infinite;
+}
+.topbar{
+  min-height:58px; padding:10px clamp(17px,4vw,56px); display:flex;
+  align-items:center; justify-content:space-between; gap:18px;
+  border-bottom:1px solid var(--line); background:rgba(1,8,13,.82);
+  backdrop-filter:blur(16px); font-family:"IBM Plex Mono",monospace;
+}
+.brand{display:flex;align-items:center;gap:11px;font-size:11px;font-weight:600;letter-spacing:.12em}
+.brand-mark{
+  width:27px;height:27px;border:1px solid var(--cyan);position:relative;
+  clip-path:polygon(0 0,72% 0,100% 28%,100% 100%,28% 100%,0 72%);
+  box-shadow:inset 0 0 15px rgba(90,245,255,.09),0 0 15px rgba(90,245,255,.12);
+}
+.brand-mark::before,.brand-mark::after{content:"";position:absolute;width:5px;height:5px;background:var(--cyan);box-shadow:0 0 8px var(--cyan)}
+.brand-mark::before{left:6px;top:10px}.brand-mark::after{right:5px;top:6px;background:var(--pink);box-shadow:0 0 8px var(--pink)}
+.live{display:flex;align-items:center;gap:8px;color:rgba(206,243,246,.56);font-size:8px;letter-spacing:.15em;text-transform:uppercase}
+.live i{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 11px var(--cyan);animation:pulse 1.8s ease-in-out infinite}
+
+.hud{
+  width:min(1380px,100%); margin:auto; padding:clamp(12px,2vh,20px) clamp(14px,4vw,54px) 7px;
+  display:grid; grid-template-columns:minmax(155px,.72fr) minmax(340px,1.65fr) minmax(175px,.78fr);
+  gap:clamp(12px,2.2vw,28px); align-items:center;
+}
+.side-panel{
+  position:relative; min-height:340px; padding:40px 15px 18px;
+  border:1px solid var(--line); background:linear-gradient(145deg,rgba(3,17,24,.9),rgba(2,9,14,.94));
+  box-shadow:inset 0 0 38px rgba(90,245,255,.025),0 22px 54px rgba(0,0,0,.25);
+  clip-path:polygon(13px 0,100% 0,100% calc(100% - 13px),calc(100% - 13px) 100%,0 100%,0 13px);
+}
+.side-panel::before{content:"";position:absolute;left:0;top:0;width:17px;height:17px;border-left:2px solid var(--cyan);border-top:2px solid var(--cyan)}
+.side-panel.right::before{left:auto;right:0;border-left:0;border-right:2px solid var(--pink);border-top-color:var(--pink)}
+.panel-label{position:absolute;left:13px;top:13px;color:var(--cyan);font:500 7px/1 "IBM Plex Mono",monospace;letter-spacing:.18em}
+.side-panel.right .panel-label{color:var(--pink)}
+.steps{list-style:none;margin:0;padding:0;display:grid;gap:13px}
+.steps li{position:relative;border-left:1px solid rgba(90,245,255,.2);padding:4px 0 4px 13px}
+.steps li::before{content:"";position:absolute;left:-3px;top:11px;width:5px;height:5px;background:var(--cyan);box-shadow:0 0 9px var(--cyan)}
+.steps b,.telemetry b{display:block;color:var(--paper);font:500 11px/1.3 "Chakra Petch",sans-serif}
+.steps span,.telemetry span{display:block;margin-top:4px;color:var(--muted);font-size:8px;line-height:1.45}
+.steps code{display:block;margin-bottom:5px;color:rgba(90,245,255,.48);font:500 7px/1 "IBM Plex Mono",monospace}
+.telemetry{display:grid;gap:9px}
+.telemetry div{border:1px solid rgba(255,79,216,.15);background:rgba(255,79,216,.035);padding:10px}
+.telemetry small{display:block;color:var(--pink);font:500 6.5px/1 "IBM Plex Mono",monospace;letter-spacing:.13em;margin-bottom:5px}
+.signal-ok{display:flex!important;align-items:center;gap:6px;color:var(--cyan)!important;font-family:"IBM Plex Mono",monospace!important;letter-spacing:.08em}
+.signal-ok::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan)}
+
+.center{text-align:center;min-width:0}
+.kicker{display:flex;align-items:center;justify-content:center;gap:10px;color:var(--cyan);font:500 8px/1 "IBM Plex Mono",monospace;letter-spacing:.22em;text-transform:uppercase}
+.kicker::before,.kicker::after{content:"";width:42px;height:1px;background:linear-gradient(90deg,transparent,var(--cyan))}
+.kicker::after{transform:scaleX(-1)}
+h1{margin:11px 0 6px;font:500 clamp(2rem,4vw,3.2rem)/1.02 "Chakra Petch",sans-serif;letter-spacing:-.04em;text-transform:uppercase;color:#f3feff;text-shadow:0 0 30px rgba(90,245,255,.16);animation:titleGlitch 7s steps(1,end) infinite}
+h1 em{font-style:normal;color:var(--cyan);text-shadow:0 0 24px rgba(90,245,255,.23)}
+.subhead{margin:0 auto 18px;color:var(--muted);font-size:clamp(.8rem,1.2vw,1rem);line-height:1.55}
+
+.target{
+  width:max-content; max-width:100%; margin:0 auto; position:relative; padding:18px;
+  filter:drop-shadow(0 24px 44px rgba(0,0,0,.48));
+}
+/* Reticle animation lives outside the QR. Nothing overlays the code itself. */
+.target::before,.target::after{content:"";position:absolute;inset:1px;border:1px solid rgba(90,245,255,.22);pointer-events:none;animation:targetPulse 2.8s ease-in-out infinite}
+.target::after{inset:-7px;border-style:dashed;border-color:rgba(255,79,216,.17);animation:targetOrbit 18s linear infinite}
+.corner{position:absolute;width:28px;height:28px;z-index:2;pointer-events:none}
+.corner.tl{left:0;top:0;border-left:3px solid var(--cyan);border-top:3px solid var(--cyan)}
+.corner.tr{right:0;top:0;border-right:3px solid var(--pink);border-top:3px solid var(--pink)}
+.corner.bl{left:0;bottom:0;border-left:3px solid var(--pink);border-bottom:3px solid var(--pink)}
+.corner.br{right:0;bottom:0;border-right:3px solid var(--cyan);border-bottom:3px solid var(--cyan)}
+.qr{
+  position:relative; z-index:3; background:#fff; padding:24px;
+  /* A pure white quiet zone is non-negotiable for scan reliability. */
+  box-shadow:0 0 0 1px #fff,0 0 0 7px rgba(90,245,255,.065),0 0 42px rgba(90,245,255,.13);
+}
+.qr img{display:block;width:clamp(245px,min(29vw,42vh),350px);height:auto;aspect-ratio:1;image-rendering:auto}
+.lock{display:flex;align-items:center;justify-content:center;gap:7px;margin-top:13px;color:rgba(90,245,255,.58);font:500 7px/1 "IBM Plex Mono",monospace;letter-spacing:.16em}
+.lock i{width:5px;height:5px;background:var(--cyan);box-shadow:0 0 8px var(--cyan);animation:pulse 1.8s infinite}
+.url{margin-top:13px;color:rgba(226,250,252,.66);font:400 clamp(.66rem,1.1vw,.82rem)/1.4 "IBM Plex Mono",monospace;letter-spacing:.04em;word-break:break-all}
+
+.footer{padding:4px 18px 6px;text-align:center;color:rgba(182,218,221,.35);font:400 7px/1.5 "IBM Plex Mono",monospace;letter-spacing:.12em}
+.footer b{color:rgba(90,245,255,.5);font-weight:500}
+
+@keyframes viewportScan{to{transform:translateY(820%)}}
+@keyframes pulse{50%{opacity:.35;box-shadow:0 0 3px var(--cyan)}}
+@keyframes targetPulse{50%{inset:7px;border-color:rgba(90,245,255,.08)}}
+@keyframes targetOrbit{to{transform:rotate(360deg)}}
+@keyframes titleGlitch{0%,93%,96%,100%{transform:none}94%{transform:translateX(-1px);text-shadow:3px 0 var(--pink),-3px 0 var(--cyan)}95%{transform:translateX(1px)}}
+
+@media(max-width:900px){
+  body{display:block}.topbar{min-height:58px}.hud{grid-template-columns:1fr;padding-top:22px}
+  .side-panel{min-height:auto}.side-panel.left{order:2}.center{order:1}.side-panel.right{order:3}
+  .steps{grid-template-columns:repeat(3,1fr);gap:7px}.steps li{padding:8px;border:1px solid var(--line);border-left:1px solid var(--line)}.steps li::before{display:none}
+  .telemetry{grid-template-columns:repeat(3,1fr)}
+}
+@media(max-width:560px){
+  .topbar{padding-inline:14px}.brand{font-size:9px}.live{font-size:6.5px}.hud{padding-inline:11px;gap:11px}
+  h1{font-size:clamp(1.85rem,10vw,2.7rem)}.subhead{font-size:.76rem;margin-bottom:12px}
+  .target{padding:15px}.target::after{inset:4px;transform:none;animation:targetPulse 2.8s ease-in-out infinite}.qr{padding:20px}.qr img{width:min(66vw,270px)}
+  .steps,.telemetry{grid-template-columns:1fr}.side-panel{padding-top:37px}.footer{padding-bottom:max(14px,env(safe-area-inset-bottom))}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+@media(forced-colors:active){.qr{forced-color-adjust:none;background:#fff}.qr img{forced-color-adjust:none}.corner{display:none}}
 </style>
 </head>
 <body>
-  <div class="eyebrow">Amazon Connect · Agentic Voice AI</div>
-  <h1>ให้ <em>AI</em> โทรหาคุณ<br>สแกนเลย</h1>
-  <p>Bank Collection · Insurance · Brokerage — พูดไทยได้จริง</p>
-  <div class="qr">
-    <img src="https://api.qrserver.com/v1/create-qr-code/?size=600x600&data=https%3A%2F%2F__DEMO_DOMAIN__" alt="QR code to demo">
-  </div>
-  <div class="url">__DEMO_DOMAIN__</div>
+<header class="topbar">
+  <div class="brand"><i class="brand-mark" aria-hidden="true"></i><span>FSI VOICE NETWORK</span></div>
+  <div class="live"><i aria-hidden="true"></i>DEMO ACCESS NODE · ONLINE</div>
+</header>
+<main class="hud">
+  <aside class="side-panel left" aria-label="ขั้นตอนการทดลอง">
+    <span class="panel-label">01 / ACCESS SEQUENCE</span>
+    <ol class="steps">
+      <li><code>STEP-01</code><b>สแกน QR</b><span>เปิดกล้องโทรศัพท์ แล้วเล็งที่โค้ดตรงกลาง</span></li>
+      <li><code>STEP-02</code><b>เลือกสถานการณ์</b><span>สินเชื่อ · ประกัน · การลงทุน</span></li>
+      <li><code>STEP-03</code><b>คุยภาษาไทย</b><span>ผ่าน WebRTC หรือให้ AI โทรหาคุณ</span></li>
+    </ol>
+  </aside>
+
+  <section class="center" aria-labelledby="qr-title">
+    <div class="kicker">Amazon Connect · Agentic Voice</div>
+    <h1 id="qr-title">SCAN // CONNECT<br><em>SPEAK THAI</em></h1>
+    <p class="subhead">สแกนเพื่อทดลอง AI เสียงไทยสำหรับบริการทางการเงิน</p>
+    <div class="target" aria-label="QR code สำหรับเปิดหน้าสาธิต">
+      <i class="corner tl" aria-hidden="true"></i><i class="corner tr" aria-hidden="true"></i>
+      <i class="corner bl" aria-hidden="true"></i><i class="corner br" aria-hidden="true"></i>
+      <div class="qr">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=600x600&amp;data=https%3A%2F%2F__DEMO_DOMAIN__" alt="สแกน QR code เพื่อเปิดหน้าทดลอง AI เสียงไทย" width="600" height="600">
+      </div>
+    </div>
+    <div class="lock"><i aria-hidden="true"></i>SCAN TARGET LOCKED · 600 × 600</div>
+    <div class="url">https://__DEMO_DOMAIN__/</div>
+  </section>
+
+  <aside class="side-panel right" aria-label="ข้อมูลระบบสาธิต">
+    <span class="panel-label">02 / LIVE TELEMETRY</span>
+    <div class="telemetry">
+      <div><small>VOICE CORE</small><b>Amazon Connect</b><span>Agentic voice · th-TH</span></div>
+      <div><small>RECOMMENDED</small><b>WebRTC</b><span>เปิดไมค์แล้วคุยได้ทันที</span></div>
+      <div><small>PRIVACY</small><b>No client keys</b><span>AWS credentials ไม่อยู่ในอุปกรณ์</span></div>
+      <span class="signal-ok">SYSTEM READY</span>
+    </div>
+  </aside>
+</main>
+<footer class="footer"><b>CAMERA → QR → PRIVATE DEMO ORIGIN</b><br>ข้อมูลและเสียงทั้งหมดเป็นข้อมูลสมมติสำหรับการสาธิต</footer>
 </body>
 </html>
