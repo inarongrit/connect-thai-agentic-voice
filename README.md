@@ -22,6 +22,47 @@ dialled from outside the US, so callers in Thailand use the WebRTC path.
 | **Insurance** | Discovers one coverage need and the customer's own priority, shares one approved fact, then asks permission for a licensed-agent handoff |
 | **Brokerage** | Discovers learning topic and experience before offering a tailored seminar or a licensed consultation — generic interest never books or closes |
 
+## What it costs to run
+
+Measured from this account's own billing rather than a price list, so the figures reflect
+what this demo actually cost rather than what it might. The account is shared with
+unrelated workloads, so only usage types belonging to the demo are counted.
+
+**Standing cost, doing nothing:** about **$3.60 a month**, entirely two claimed toll-free
+numbers at $0.06 per number-day. The S3 bucket, CloudFront distribution, HTTP API,
+DynamoDB table and six Lambdas cost sub-cent amounts at rest and round to zero.
+
+**Per call**, at three minutes of talk time, one outbound call, no retries:
+
+| Channel | Per call | What dominates |
+|---|---|---|
+| Browser over WebRTC | **$0.15** | Connect AI media at $0.038/min |
+| PSTN to a US number | **$0.13** | Connect AI media; US telephony is $0.0048/min |
+| PSTN to a Thai number | **$0.32** | Thai telephony at $0.0699/min, more than the AI itself |
+
+Calling a Thai mobile costs roughly twice a browser session, and the telephony leg is the
+reason — not the model. Dialogue tokens are about a tenth of a cent per call.
+
+**A month of real use:** roughly **$9** for 30 days including 147 minutes of AI
+conversation, 41 minutes of WebRTC audio and 37 minutes of toll-free inbound. Most demos
+will cost less than lunch.
+
+**Not yet in these figures.** Contact Lens real-time analytics was enabled recently and
+has no billed history here; it bills per minute on top of post-call, so expect it to
+become the second largest line after telephony once calls run. Amazon Q in Connect and
+Customer Profiles likewise show no usage yet.
+
+```bash
+python3 tools/cost_per_call.py --compare          # all channels side by side
+python3 tools/cost_per_call.py --show-sources     # where every rate came from
+python3 tools/cost_per_call.py --show-assumptions # and what it excludes
+```
+
+These are measurements of past usage, not a quotation. For forward-looking estimates, and
+before committing to anything, use the
+[AWS Pricing Calculator](https://calculator.aws/) and the pricing page for each service —
+rates vary by Region and change over time.
+
 ## Inbound, and what happens when the assistant cannot help
 
 | Capability | Behaviour |

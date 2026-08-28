@@ -239,3 +239,38 @@ class SingleEngineAndChannelOrderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadmePricingTests(unittest.TestCase):
+    """The README quotes costs, so it must say where they came from and what they are not.
+
+    A number in a README is read as a quotation unless it says otherwise, and these are
+    measurements of one account's past usage in one Region.
+    """
+
+    README = (Path(__file__).parents[1] / "README.md").read_text()
+
+    def test_pricing_is_present(self):
+        self.assertIn("## What it costs to run", self.README)
+
+    def test_every_channel_is_costed(self):
+        for channel in ("WebRTC", "US number", "Thai number"):
+            with self.subTest(channel=channel):
+                self.assertIn(channel, self.README)
+
+    def test_the_figures_are_not_presented_as_a_quotation(self):
+        self.assertIn("not a quotation", self.README)
+        self.assertIn("calculator.aws", self.README)
+
+    def test_the_standing_cost_is_stated_separately_from_usage(self):
+        """Someone deciding whether to leave this deployed needs the idle figure."""
+        self.assertIn("Standing cost", self.README)
+        self.assertIn("toll-free", self.README)
+
+    def test_unbilled_services_are_declared(self):
+        """Contact Lens real-time was enabled after the measurement window."""
+        self.assertIn("Not yet in these figures", self.README)
+        self.assertIn("Contact Lens real-time", self.README)
+
+    def test_the_reader_is_pointed_at_the_tool(self):
+        self.assertIn("tools/cost_per_call.py --show-sources", self.README)
