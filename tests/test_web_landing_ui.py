@@ -300,7 +300,7 @@ class RuntimeArchitectureSlideTests(unittest.TestCase):
         self.assertIn("mantle_dialogue.py", self.SLIDE)
         self.assertIn("1,554 LOC", self.SLIDE)
         self.assertIn("67 FUNCTIONS", self.SLIDE)
-        self.assertIn("357 TESTS", self.SLIDE)
+        self.assertIn("362 TESTS", self.SLIDE)
 
     def test_prompts_are_explicitly_not_the_engine(self):
         self.assertIn("PROMPTS ARE NOT THE ENGINE.", self.SLIDE)
@@ -347,8 +347,8 @@ class RuntimeArchitectureSlideTests(unittest.TestCase):
         self.assertIn(".runtime-services{grid-template-columns:1fr", self.HTML)
 
     def test_the_old_test_count_is_gone_from_the_deck(self):
-        self.assertNotIn("336 regression tests", self.HTML)
-        self.assertIn("357 regression tests", self.HTML)
+        self.assertNotIn("357 regression tests", self.HTML)
+        self.assertIn("362 regression tests", self.HTML)
 
 
 class UnifiedCyberpunkThemeTests(unittest.TestCase):
@@ -420,3 +420,39 @@ class UnifiedCyberpunkThemeTests(unittest.TestCase):
         self.assertIn("@media(max-width:900px)", self.LANDING)
         self.assertIn("@media(max-width:620px)", self.PSTN)
         self.assertIn(".wave-shell{clip-path:none}", self.PSTN)
+
+
+class FlowingTitleTreatmentTests(unittest.TestCase):
+    """The opening title carries the cyberpunk palette without sacrificing text.
+
+    Background-clipped text needs three escape hatches: a normal solid colour before
+    the feature query, a forced-colours fallback, and the deck-wide reduced-motion rule.
+    A striking title that disappears in a browser or cannot be read in high-contrast
+    mode is not production design.
+    """
+
+    HTML = (Path(__file__).parents[1] / "web" / "index.html").read_text()
+
+    def test_title_flows_from_cyan_through_magenta(self):
+        self.assertIn("@keyframes titleColorFlow", self.HTML)
+        self.assertIn("titleColorFlow 9s", self.HTML)
+        self.assertIn("var(--cy-cyan) 24%", self.HTML)
+        self.assertIn("var(--cy-pink) 67%", self.HTML)
+
+    def test_background_clipping_is_feature_gated(self):
+        self.assertIn("@supports ((background-clip:text) or (-webkit-background-clip:text))", self.HTML)
+        self.assertIn("-webkit-background-clip:text", self.HTML)
+        self.assertIn("-webkit-text-fill-color:transparent", self.HTML)
+
+    def test_a_solid_title_colour_exists_before_the_feature_query(self):
+        feature = self.HTML.index("@supports ((background-clip:text)")
+        solid = self.HTML.index(".slide:first-child .hero h1{color:#f2feff")
+        self.assertLess(solid, feature)
+
+    def test_forced_colours_restore_readable_text(self):
+        self.assertIn("@media(forced-colors:active)", self.HTML)
+        self.assertIn("-webkit-text-fill-color:CanvasText", self.HTML)
+        self.assertIn("background:none;color:CanvasText", self.HTML)
+
+    def test_reduced_motion_covers_the_flow_animation(self):
+        self.assertIn("@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important", self.HTML)
