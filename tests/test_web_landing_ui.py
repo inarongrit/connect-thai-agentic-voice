@@ -508,6 +508,10 @@ class VoiceLabSlideTests(unittest.TestCase):
         """
         self.assertIn('<option value="SUDA" data-engine="connect:agentic" '
                       'data-language="th-TH" selected>', self.HTML)
+        # Somchai was confirmed by listening on a real call, not by the validator,
+        # which accepts any string. Both Thai voices must stay on th-TH.
+        self.assertIn('<option value="Somchai" data-engine="connect:agentic" '
+                      'data-language="th-TH">', self.HTML)
         for voice in ("Katie", "Blake", "Brooke", "Ronald", "Gemma"):
             self.assertIn(f'<option value="{voice}" data-engine="connect:agentic" '
                           'data-language="en-US">', self.HTML)

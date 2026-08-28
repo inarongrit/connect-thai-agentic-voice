@@ -203,8 +203,10 @@ Behaviour worth knowing:
   **spoken aloud** rather than ignored.
 - **No single voice covers Thai and English.** The multilingual (polyglot) voices —
   Katie, Blake, Brooke, Ronald, Gemma — do not list Thai, so Thai needs a Thai voice.
-- The dropdown lists only voices confirmed here (Suda) plus the documented multilingual
-  voices. Because Connect's validator accepts unknown voice names, the slide also has a
+- The dropdown lists the two Thai voices confirmed by listening on a real call — Suda
+  and Somchai — plus the documented multilingual voices. Neither Thai name can be
+  discovered from an API: Polly exposes no `th-TH` voices in us-west-2 and Connect's
+  flow validator accepts any string, so the only proof is hearing them. Because Connect's validator accepts unknown voice names, the slide also has a
   **custom voice** field: type any name from the console's Set voice list to try it.
 - The flow sets a known-good Thai voice *before* applying the requested one, and every
   override sits on an error branch that falls through. An unsupported voice therefore
