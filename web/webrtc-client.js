@@ -16,7 +16,7 @@ function stopTracks(stream) {
   if (stream) stream.getTracks().forEach(track => track.stop());
 }
 
-export async function startCall({ api, scenario, name, brainMode, audioElement, onState }) {
+export async function startCall({ api, scenario, name, brainMode, audioElement, onState, request }) {
   if (active) await stopCall();
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("browser does not support microphone calling");
@@ -38,7 +38,10 @@ export async function startCall({ api, scenario, name, brainMode, audioElement, 
     const response = await fetch(api, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "webrtc", scenario, name, brainMode: brainMode || "mantle" }),
+      // `request` lets a caller start a different kind of WebRTC contact — the voice lab
+      // posts an action instead of a scenario. The scenario body stays the default so the
+      // three demo journeys are unaffected.
+      body: JSON.stringify(request || { mode: "webrtc", scenario, name, brainMode: brainMode || "mantle" }),
     });
     let payload = {};
     try { payload = await response.json(); } catch (_) {}

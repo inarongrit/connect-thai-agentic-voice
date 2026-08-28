@@ -382,6 +382,23 @@ html[data-theme="red-orbit"] .status.success,html[data-theme="red-orbit"] .call-
 @media(max-width:900px){.runtime-slide{display:block;overflow-y:auto;padding:15px 13px 74px}.runtime-head{align-items:flex-start;margin-bottom:12px}.runtime-status{display:none}.runtime-shell{display:flex;flex-direction:column}.runtime-ingress,.runtime-core-zone,.runtime-services,.runtime-quarantine,.runtime-readout{grid-area:auto;min-height:auto}.runtime-ingress{grid-template-columns:repeat(3,1fr);grid-template-rows:1fr;padding-top:34px}.runtime-ingress::after{left:10%;right:10%;top:52%;bottom:auto;width:auto;height:1px}.runtime-core-zone{min-height:330px}.runtime-services{grid-template-columns:1fr 1fr;grid-template-rows:repeat(3,90px)}.runtime-quarantine{min-height:115px}.runtime-readout{min-height:180px;grid-template-columns:1fr;grid-template-rows:auto auto auto auto}.runtime-readout .runtime-label{grid-column:auto}.runtime-facts{justify-content:flex-start}.runtime-node strong{font-size:.78rem}}
 @media(max-width:560px){.runtime-head h2{font-size:1.55rem}.runtime-head p{font-size:.7rem}.runtime-ingress{grid-template-columns:1fr}.runtime-ingress::after{display:none}.runtime-core-zone{min-height:430px}.runtime-core-layout{grid-template-columns:1fr;grid-template-rows:auto 1fr}.runtime-core-guards{grid-template-columns:1fr 1fr;grid-template-rows:1fr}.runtime-services{grid-template-columns:1fr;grid-template-rows:repeat(6,76px)}.runtime-readout{min-height:210px}}
 
+/* ── Slide 06: Voice lab ────────────────────────────────────────────────────
+   A speech bench, not a form. Left column composes the script, right column is a
+   live readout of what will be sent to the engine. Amber marks the beta emotion tag
+   and the places where the platform will read a mistake out loud. */
+.lab-slide{--hud-cyan:#5af5ff;--hud-pink:#ff4fd8;--hud-amber:#ffc45f;padding:clamp(15px,2.4vh,24px) clamp(16px,3.2vw,48px) 72px;display:grid;grid-template-rows:auto minmax(0,1fr);gap:12px;position:relative;isolation:isolate;background:radial-gradient(circle at 30% 40%,rgba(20,174,192,.12),transparent 30%),radial-gradient(circle at 88% 22%,rgba(255,79,216,.07),transparent 27%),linear-gradient(145deg,#010407,#02090e 55%,#03050a);font-family:"IBM Plex Mono",monospace}.lab-slide::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;opacity:.4;background:repeating-linear-gradient(0deg,transparent 0 3px,rgba(90,245,255,.025) 3px 4px),linear-gradient(rgba(90,245,255,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(90,245,255,.03) 1px,transparent 1px);background-size:auto,38px 38px,38px 38px}
+.lab-head{display:flex;align-items:flex-end;justify-content:space-between;gap:22px;position:relative;z-index:2}.lab-kicker{display:flex;align-items:center;gap:10px;color:var(--hud-cyan);font-size:9px;letter-spacing:.22em;text-transform:uppercase}.lab-kicker::before{content:"06";display:grid;place-items:center;width:27px;height:27px;border:1px solid var(--hud-cyan);box-shadow:0 0 16px rgba(90,245,255,.13)}.lab-head h2{margin:8px 0 5px;font-family:"Chakra Petch",sans-serif;font-size:clamp(1.5rem,2.7vw,2.5rem);font-weight:500;letter-spacing:-.035em;line-height:1;text-transform:uppercase;color:#efffff;text-shadow:0 0 26px rgba(90,245,255,.14)}.lab-head p{margin:0;max-width:80ch;color:rgba(222,248,250,.58);font-family:"IBM Plex Sans Thai",sans-serif;font-size:clamp(.72rem,.94vw,.86rem);line-height:1.55}
+.lab-shell{min-height:0;display:grid;grid-template-columns:minmax(360px,1.35fr) minmax(280px,1fr);gap:12px;position:relative;z-index:2}
+.lab-panel{position:relative;border:1px solid rgba(90,245,255,.18);background:linear-gradient(145deg,rgba(4,17,24,.9),rgba(2,9,14,.94));box-shadow:inset 0 0 40px rgba(90,245,255,.018),0 20px 50px rgba(0,0,0,.26);padding:32px 15px 14px;min-height:0;display:flex;flex-direction:column;gap:9px;overflow:auto}.lab-panel::before,.lab-panel::after{content:"";position:absolute;width:15px;height:15px;pointer-events:none}.lab-panel::before{left:-1px;top:-1px;border-left:2px solid var(--hud-cyan);border-top:2px solid var(--hud-cyan)}.lab-panel::after{right:-1px;bottom:-1px;border-right:2px solid var(--hud-pink);border-bottom:2px solid var(--hud-pink)}.lab-label{position:absolute;left:11px;top:9px;color:rgba(90,245,255,.55);font-size:7px;letter-spacing:.18em;text-transform:uppercase}.lab-label b{color:var(--hud-cyan);font-weight:500}
+.lab-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.lab-field{display:flex;flex-direction:column;gap:4px;min-width:0}.lab-field span{color:rgba(90,245,255,.5);font-size:6.5px;letter-spacing:.15em;text-transform:uppercase}.lab-field select,.lab-field input,.lab-slide textarea{appearance:none;width:100%;border:1px solid rgba(90,245,255,.22);background:rgba(0,7,12,.8);color:#e9feff;font-family:"IBM Plex Sans Thai",sans-serif;font-size:12px;padding:9px 10px;outline:none}.lab-field select{font-family:"IBM Plex Mono",monospace;font-size:11px;cursor:pointer}.lab-field select:focus,.lab-field input:focus,.lab-slide textarea:focus{border-color:var(--hud-cyan);box-shadow:0 0 0 2px rgba(90,245,255,.08)}
+.lab-slide textarea{flex:1;min-height:104px;resize:none;line-height:1.65;font-size:13px}
+.lab-tags{display:flex;flex-wrap:wrap;gap:5px}.lab-tag{appearance:none;border:1px solid rgba(90,245,255,.24);background:rgba(90,245,255,.04);color:rgba(206,246,249,.8);font:500 8px/1 "IBM Plex Mono",monospace;letter-spacing:.06em;padding:6px 8px;cursor:pointer;clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px))}.lab-tag:hover{border-color:var(--hud-cyan);background:rgba(90,245,255,.1);color:#f0ffff}.lab-tag.beta{border-color:rgba(255,196,95,.35);color:#ffdca8;background:rgba(255,196,95,.05)}
+.lab-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.lab-play{appearance:none;flex:1;min-width:180px;border:0;background:linear-gradient(90deg,var(--hud-cyan),#b9fbff);color:#021016;font:600 12px/1 "Chakra Petch",sans-serif;letter-spacing:.05em;padding:14px 16px;cursor:pointer;clip-path:polygon(0 0,calc(100% - 11px) 0,100% 11px,100% 100%,11px 100%,0 calc(100% - 11px))}.lab-play:disabled{opacity:.55;cursor:wait}.lab-stop{appearance:none;border:1px solid rgba(255,79,216,.5);background:rgba(255,79,216,.07);color:#ffd0f3;font:500 10px/1 "IBM Plex Mono",monospace;padding:13px 14px;cursor:pointer}.lab-stop[hidden]{display:none}
+.lab-count{color:rgba(90,245,255,.45);font-size:7px;letter-spacing:.1em}.lab-status{min-height:15px;font-size:9px;line-height:1.4;color:rgba(206,246,249,.62);font-family:"IBM Plex Sans Thai",sans-serif}.lab-status.err{color:#ff9ec6}.lab-status.ok{color:var(--hud-cyan)}
+.lab-readout{display:grid;gap:7px}.lab-readout div{border:1px solid rgba(90,245,255,.14);background:rgba(2,13,19,.6);padding:8px 9px}.lab-readout small{display:block;color:rgba(90,245,255,.5);font-size:6px;letter-spacing:.14em;margin-bottom:4px}.lab-readout b{display:block;color:#e9feff;font:500 10px/1.3 "IBM Plex Mono",monospace;word-break:break-word}.lab-note{border-left:2px solid var(--hud-amber)!important;background:rgba(255,196,95,.05)!important}.lab-note b{color:#ffdca8}.lab-note em{display:block;margin-top:4px;color:rgba(255,220,168,.62);font-style:normal;font-family:"IBM Plex Sans Thai",sans-serif;font-size:8px;line-height:1.45}
+@media(max-width:900px){.lab-slide{display:block;overflow-y:auto;padding:15px 13px 74px}.lab-shell{display:flex;flex-direction:column}.lab-panel{overflow:visible}.lab-slide textarea{min-height:120px}}
+@media(max-width:560px){.lab-head h2{font-size:1.5rem}.lab-row{grid-template-columns:1fr}.lab-play{min-width:0}}
+
 /* ── Unified cyberpunk visual system: slides 01–04 ──────────────────────────
    Existing behavior and information architecture stay intact; this layer gives the
    whole deck one tactical language instead of making slide 05 look transplanted. */
@@ -511,6 +528,49 @@ html[data-theme="red-orbit"] .status.success,html[data-theme="red-orbit"] .call-
 <aside class="runtime-panel runtime-quarantine" aria-label="สิ่งที่ไม่ได้อยู่ในเส้นทางรันจริง"><span class="runtime-label">QUARANTINED ASSUMPTION</span><b>NOT THE ENGINE</b><h3>AI PROMPTS + AI AGENTS</h3><p>มีอยู่ใน instance เป็น managed alternative แต่ไม่มี flow block ใดเรียกใช้ แก้ prompt แล้วเสียงที่ผู้ชมได้ยินจะไม่เปลี่ยน</p><span class="runtime-zero"><i>0</i> FLOW REFERENCES</span></aside>
 <section class="runtime-panel runtime-readout" aria-live="polite"><span class="runtime-label">ACTIVE LAYER // SELECT A NODE</span><h3>AWS Lambda — สมองของระบบที่รันจริง</h3><p>mantle_dialogue.py เก็บ state ตัดสินใจทุก turn บังคับ conduct policy สร้างคำตอบจาก approved facts และส่งต่อเมื่อระบบไม่ควรตัดสินเอง โมเดลช่วย classify แต่ไม่แต่งคำตอบ</p><div class="runtime-facts"><span>1,554 LOC</span><span>67 FUNCTIONS</span><span>367 TESTS</span></div><div class="runtime-ticker" aria-hidden="true"><span>CONNECT → LEX → LAMBDA CONTROL KERNEL → BEDROCK CLASSIFICATION / Q RETRIEVAL / PROFILE CONTEXT → HUMAN HANDOFF // CONDUCT RULES BEFORE MODEL JUDGEMENT // </span></div></section>
 </div>
+</section><section class="slide lab-slide" id="voice-lab" aria-labelledby="lab-title" data-voice-lab>
+<header class="lab-head"><div><div class="lab-kicker">Voice lab · Read any script aloud</div><h2 id="lab-title">TYPE IT. HEAR IT.</h2><p>พิมพ์ข้อความไทยหรืออังกฤษ เลือกเสียง แล้วฟังผลผ่าน WebRTC ทันที ใช้ speech control tag เพื่อปรับจังหวะ ความดัง และอารมณ์ได้</p></div></header>
+<div class="lab-shell">
+  <section class="lab-panel" aria-label="เรียบเรียงบทพูด"><span class="lab-label"><b>01</b> / SCRIPT COMPOSER</span>
+    <div class="lab-row">
+      <label class="lab-field"><span>Voice</span>
+        <select id="lab-voice"><option value="SUDA" data-engine="connect:agentic" data-language="th-TH" selected>Suda · ไทย (ใช้ในเดโมนี้)</option><option value="Katie" data-engine="connect:agentic" data-language="en-US">Katie · multilingual (EN +9)</option><option value="Blake" data-engine="connect:agentic" data-language="en-US">Blake · multilingual (EN +9)</option><option value="Brooke" data-engine="connect:agentic" data-language="en-US">Brooke · multilingual (EN +9)</option><option value="Ronald" data-engine="connect:agentic" data-language="en-US">Ronald · multilingual (EN +9)</option><option value="Gemma" data-engine="connect:agentic" data-language="en-US">Gemma · multilingual (EN +9)</option></select>
+      </label>
+      <label class="lab-field"><span>Locale sent to engine</span>
+        <input id="lab-language" value="th-TH" readonly aria-readonly="true">
+      </label>
+    </div>
+    <label class="lab-field" style="flex:1"><span>Script · ไทย + English</span>
+      <textarea id="lab-text" maxlength="600" spellcheck="false" placeholder="พิมพ์ข้อความที่ต้องการให้อ่านออกเสียง">สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติค่ะ ยอดที่ต้องชำระคือ หนึ่งหมื่นห้าพันห้าร้อยบาท ครบกำหนด 15 สิงหาคม 2569 ค่ะ Thank you for using Amazon Connect agentic voice.</textarea>
+    </label>
+    <div class="lab-tags" aria-label="แทรก speech control tag">
+      <button type="button" class="lab-tag" data-insert="&lt;break time=&quot;500ms&quot;/&gt;">break 500ms</button>
+      <button type="button" class="lab-tag" data-insert="&lt;speed ratio=&quot;0.85&quot;/&gt;">speed 0.85</button>
+      <button type="button" class="lab-tag" data-insert="&lt;speed ratio=&quot;1.2&quot;/&gt;">speed 1.2</button>
+      <button type="button" class="lab-tag" data-insert="&lt;volume ratio=&quot;1.5&quot;/&gt;">volume 1.5</button>
+      <button type="button" class="lab-tag" data-wrap="spell">spell</button>
+      <button type="button" class="lab-tag beta" data-insert="&lt;emotion value=&quot;content&quot;/&gt;">emotion content · beta</button>
+      <button type="button" class="lab-tag beta" data-insert="&lt;emotion value=&quot;sad&quot;/&gt;">emotion sad · beta</button>
+      <button type="button" class="lab-tag" data-insert="[laughter]">laughter</button>
+    </div>
+    <div class="lab-actions">
+      <button type="button" class="lab-play" id="lab-play">▶ อ่านออกเสียงผ่าน WebRTC</button>
+      <button type="button" class="lab-stop" id="lab-stop" hidden>■ หยุด</button>
+      <span class="lab-count" id="lab-count">0 / 600</span>
+      <span class="lab-count">ต้องมีไมโครโฟน · WebRTC เปิดสายสองทาง</span>
+    </div>
+    <div class="lab-status" id="lab-status" role="status" aria-live="polite"></div>
+  </section>
+  <aside class="lab-panel" aria-label="สิ่งที่จะส่งไปยังเครื่องสังเคราะห์เสียง"><span class="lab-label"><b>02</b> / ENGINE READOUT</span>
+    <div class="lab-readout">
+      <div><small>VOICE</small><b id="lab-out-voice">SUDA</b></div>
+      <div><small>ENGINE</small><b id="lab-out-engine">connect:agentic</b></div>
+      <div><small>LOCALE</small><b id="lab-out-language">th-TH</b></div>
+      <div class="lab-note"><small>MOOD &amp; TONE</small><b>Control tags, not SSML</b><em>รองรับ speed · volume · break · spell · emotion (beta) · [laughter] — แต่ไม่รองรับ SSML แบบ &lt;speak&gt; และแท็กที่พิมพ์ผิดจะถูกอ่านออกเสียง</em></div>
+      <div class="lab-note"><small>THAI + ENGLISH</small><b>Thai needs a Thai voice</b><em>เสียง multilingual (Katie · Blake · Brooke · Ronald · Gemma) ยังไม่รองรับภาษาไทย ให้เลือก Suda สำหรับข้อความไทย</em></div>
+    </div>
+  </aside>
+</div>
 </section></div><nav class="deck-nav" aria-label="เลื่อนดูเนื้อหา"><button type="button" id="deck-prev" aria-label="สไลด์ก่อนหน้า">&#8249;</button><div class="deck-dots" id="deck-dots" role="tablist" aria-label="เลือกสไลด์"></div><span class="deck-label" id="deck-label"></span><button type="button" id="deck-next" aria-label="สไลด์ถัดไป">&#8250;</button></nav><script>window.global = window;</script>
 <script src="webrtc.bundle.js?v=20260819-2"></script>
 <script src="feedback.js?v=20260819-3"></script>
@@ -532,7 +592,7 @@ form.addEventListener("submit",async event=>{event.preventDefault();if(mode==="p
 window.addEventListener("beforeunload",()=>{if(FsiWebRTC?.isActive?.())FsiWebRTC.stopCall()});window.addEventListener("resize",positionFeedback);setMode("webrtc");
 </script>
 <script>
-(function(){const deck=document.getElementById("deck"),prev=document.getElementById("deck-prev"),next=document.getElementById("deck-next"),dots=document.getElementById("deck-dots"),label=document.getElementById("deck-label");if(!deck)return;const slides=[...deck.querySelectorAll(".slide")],names=["หน้าเริ่มต้น","Conversation Journeys","Voice → Evidence Pipeline","Evaluation → Improvement","How It Actually Runs"];slides.forEach((_,i)=>{const dot=document.createElement("button");dot.type="button";dot.setAttribute("role","tab");dot.setAttribute("aria-label",names[i]||"สไลด์ "+(i+1));dot.addEventListener("click",()=>go(i));dots.appendChild(dot)});let index=0,moving=0;function render(){prev.disabled=index<=0;next.disabled=index>=slides.length-1;label.textContent=names[index]||"";[...dots.children].forEach((d,i)=>d.setAttribute("aria-current",String(i===index)))}function go(i){index=Math.max(0,Math.min(slides.length-1,i));moving=Date.now();deck.scrollTo({left:index*deck.clientWidth,behavior:"smooth"});render()}function sync(){index=Math.round(deck.scrollLeft/Math.max(1,deck.clientWidth));render()}prev.addEventListener("click",()=>go(index-1));next.addEventListener("click",()=>go(index+1));deck.addEventListener("scroll",()=>{window.clearTimeout(deck._t);deck._t=window.setTimeout(()=>{if(Date.now()-moving<900)return;sync()},110)},{passive:true});window.addEventListener("resize",()=>deck.scrollTo({left:index*deck.clientWidth,behavior:"instant"}));document.addEventListener("keydown",event=>{const typing=/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName||""),localNavigation=document.activeElement?.matches?.(".atlas-card,.mission-controls button,.atlas-tour,.runtime-node,.runtime-core");if(typing||localNavigation)return;if(event.key==="ArrowRight"){go(index+1)}else if(event.key==="ArrowLeft"){go(index-1)}});sync();})();
+(function(){const deck=document.getElementById("deck"),prev=document.getElementById("deck-prev"),next=document.getElementById("deck-next"),dots=document.getElementById("deck-dots"),label=document.getElementById("deck-label");if(!deck)return;const slides=[...deck.querySelectorAll(".slide")],names=["หน้าเริ่มต้น","Conversation Journeys","Voice → Evidence Pipeline","Evaluation → Improvement","How It Actually Runs","Voice Lab"];slides.forEach((_,i)=>{const dot=document.createElement("button");dot.type="button";dot.setAttribute("role","tab");dot.setAttribute("aria-label",names[i]||"สไลด์ "+(i+1));dot.addEventListener("click",()=>go(i));dots.appendChild(dot)});let index=0,moving=0;function render(){prev.disabled=index<=0;next.disabled=index>=slides.length-1;label.textContent=names[index]||"";[...dots.children].forEach((d,i)=>d.setAttribute("aria-current",String(i===index)))}function go(i){index=Math.max(0,Math.min(slides.length-1,i));moving=Date.now();deck.scrollTo({left:index*deck.clientWidth,behavior:"smooth"});render()}function sync(){index=Math.round(deck.scrollLeft/Math.max(1,deck.clientWidth));render()}prev.addEventListener("click",()=>go(index-1));next.addEventListener("click",()=>go(index+1));deck.addEventListener("scroll",()=>{window.clearTimeout(deck._t);deck._t=window.setTimeout(()=>{if(Date.now()-moving<900)return;sync()},110)},{passive:true});window.addEventListener("resize",()=>deck.scrollTo({left:index*deck.clientWidth,behavior:"instant"}));document.addEventListener("keydown",event=>{const typing=/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName||""),localNavigation=document.activeElement?.matches?.(".atlas-card,.mission-controls button,.atlas-tour,.runtime-node,.runtime-core,.lab-tag,#lab-text,#lab-voice");if(typing||localNavigation)return;if(event.key==="ArrowRight"){go(index+1)}else if(event.key==="ArrowLeft"){go(index-1)}});sync();})();
 </script>
 <script>
 (function(){document.querySelectorAll("[data-diagram]").forEach(group=>{const inspector=document.getElementById(group.dataset.inspector),nodes=[...group.querySelectorAll("[data-detail-title]")];if(!inspector||!nodes.length)return;const lowerPanel=group.querySelector(".atlas-lower"),stagedPrompt=group.querySelector(".staged-prompt"),iconSlot=inspector.querySelector(".inspector-orb-slot"),kicker=inspector.querySelector(".inspector-kicker"),title=inspector.querySelector("h3"),copy=inspector.querySelector("p"),tags=inspector.querySelector(".inspector-tags"),counter=inspector.querySelector(".atlas-scene-count strong"),evidencePanel=group.querySelector(".atlas-evidence"),evidenceTitle=group.querySelector(".atlas-evidence-title"),evidenceCopy=group.querySelector(".atlas-evidence-copy"),flowSteps=[...inspector.querySelectorAll(".atlas-context-step b")],facts=[...inspector.querySelectorAll(".atlas-fact")],proofs=[...group.querySelectorAll(".atlas-evidence-signal b")];function select(node,focus=false){nodes.forEach(item=>item.setAttribute("aria-pressed",String(item===node)));const sourceIcon=node.querySelector(".service-orb");if(iconSlot&&sourceIcon)iconSlot.replaceChildren(sourceIcon.cloneNode(true));kicker.textContent=node.dataset.detailKicker;title.textContent=node.dataset.detailTitle;copy.textContent=node.dataset.detailCopy;tags.replaceChildren(...node.dataset.detailTags.split("|").map(value=>{const tag=document.createElement("span");tag.textContent=value;return tag}));if(counter)counter.textContent=String(nodes.indexOf(node)+1).padStart(2,"0");if(evidenceTitle&&node.dataset.evidenceTitle)evidenceTitle.textContent=node.dataset.evidenceTitle;if(evidenceCopy&&node.dataset.evidenceCopy)evidenceCopy.textContent=node.dataset.evidenceCopy;if(node.dataset.flow)node.dataset.flow.split("|").forEach((value,index)=>{if(flowSteps[index])flowSteps[index].textContent=value});if(node.dataset.facts)node.dataset.facts.split("|").forEach((value,index)=>{const fact=facts[index];if(!fact)return;const parts=value.split("=");fact.querySelector("small").textContent=parts.shift();fact.querySelector("b").textContent=parts.join("=")});if(node.dataset.proofs)node.dataset.proofs.split("|").forEach((value,index)=>{if(proofs[index])proofs[index].textContent=value});if(focus)node.focus()}function impact(node){const reduced=window.matchMedia("(prefers-reduced-motion: reduce)").matches;if(!reduced&&window.matchMedia("(pointer: coarse)").matches&&navigator.vibrate){try{navigator.vibrate([12,18,12])}catch(_){}}[node].forEach(item=>{item.classList.remove("is-impacting");void item.offsetWidth;item.classList.add("is-impacting")});[inspector,evidencePanel].filter(Boolean).forEach(panel=>{panel.classList.remove("hud-warp");void panel.offsetWidth;panel.classList.add("hud-warp")});window.setTimeout(()=>{node.classList.remove("is-impacting");inspector.classList.remove("hud-warp");if(evidencePanel)evidencePanel.classList.remove("hud-warp")},720)}function openDetails(){if(!group.classList.contains("staged-board"))return;group.classList.add("detail-open");if(lowerPanel)lowerPanel.setAttribute("aria-hidden","false");if(stagedPrompt)stagedPrompt.setAttribute("aria-hidden","true")}nodes.forEach((node,index)=>{node.addEventListener("click",()=>{select(node);openDetails();impact(node)});node.addEventListener("keydown",event=>{if(!["ArrowRight","ArrowDown","ArrowLeft","ArrowUp"].includes(event.key))return;event.preventDefault();const step=/Right|Down/.test(event.key)?1:-1,next=nodes[(index+step+nodes.length)%nodes.length];select(next,true);openDetails();impact(next)})});group._atlasSelect=select;group._atlasOpen=openDetails;group._atlasNodes=nodes;select(nodes.find(node=>node.getAttribute("aria-pressed")==="true")||nodes[0]);if(group.classList.contains("staged-board")){nodes.forEach(item=>item.setAttribute("aria-pressed","false"));if(lowerPanel)lowerPanel.setAttribute("aria-hidden","true")}});document.querySelectorAll(".atlas-tour").forEach(button=>{const group=document.getElementById(button.dataset.tourFor);if(!group)return;const nodes=[...group.querySelectorAll("[data-tour-item]")];let timer=null,index=0;const original=button.innerHTML;function stop(){window.clearInterval(timer);timer=null;button.classList.remove("is-playing");button.innerHTML=original}function advance(){index=(index+1)%nodes.length;const node=nodes[index];group._atlasSelect(node);if(group._atlasOpen)group._atlasOpen();if(group.id==="journey-board")group.dispatchEvent(new CustomEvent("missionselect",{detail:{node}}))}button.addEventListener("click",()=>{if(timer){stop();return}const active=nodes.findIndex(node=>node.getAttribute("aria-pressed")==="true");index=active<0?0:active;button.classList.add("is-playing");button.textContent="■ หยุด Auto tour";timer=window.setInterval(advance,2300)});document.addEventListener("visibilitychange",()=>{if(document.hidden&&timer)stop()})});})();
@@ -542,6 +602,79 @@ window.addEventListener("beforeunload",()=>{if(FsiWebRTC?.isActive?.())FsiWebRTC
 </script>
 <script>
 (function(){const map=document.querySelector("[data-runtime-map]");if(!map)return;const nodes=[...map.querySelectorAll("[data-runtime-node]")],readout=map.querySelector(".runtime-readout"),title=readout.querySelector("h3"),copy=readout.querySelector("p"),facts=readout.querySelector(".runtime-facts");function select(node,focus=false){nodes.forEach(item=>item.setAttribute("aria-pressed",String(item===node)));title.textContent=node.dataset.title;copy.textContent=node.dataset.copy;facts.replaceChildren(...node.dataset.facts.split("|").map(value=>{const fact=document.createElement("span");fact.textContent=value;return fact}));node.classList.remove("is-pinging");readout.classList.remove("is-updating");void node.offsetWidth;node.classList.add("is-pinging");readout.classList.add("is-updating");window.setTimeout(()=>{node.classList.remove("is-pinging");readout.classList.remove("is-updating")},650);if(focus)node.focus({preventScroll:true})}nodes.forEach((node,index)=>{node.addEventListener("click",()=>select(node));node.addEventListener("keydown",event=>{if(!["ArrowDown","ArrowRight","ArrowUp","ArrowLeft"].includes(event.key))return;event.preventDefault();const step=/Down|Right/.test(event.key)?1:-1;select(nodes[(index+step+nodes.length)%nodes.length],true)})});const observer=new IntersectionObserver(entries=>entries.forEach(entry=>{if(entry.isIntersecting)map.classList.add("runtime-awake")}),{threshold:.42});observer.observe(map);select(nodes.find(node=>node.getAttribute("aria-pressed")==="true")||nodes[0])})();
+</script>
+<script>
+(function(){
+  "use strict";
+  var slide=document.querySelector("[data-voice-lab]");if(!slide)return;
+  var voice=document.getElementById("lab-voice"),lang=document.getElementById("lab-language"),
+      text=document.getElementById("lab-text"),play=document.getElementById("lab-play"),
+      stop=document.getElementById("lab-stop"),count=document.getElementById("lab-count"),
+      status=document.getElementById("lab-status"),
+      outVoice=document.getElementById("lab-out-voice"),outEngine=document.getElementById("lab-out-engine"),
+      outLang=document.getElementById("lab-out-language"),LIMIT=600,active=false;
+  function engine(){return voice.selectedOptions[0].dataset.engine}
+  function say(kind,message){status.className="lab-status"+(kind?" "+kind:"");status.textContent=message||""}
+  function sync(){
+    var option=voice.selectedOptions[0];
+    lang.value=option.dataset.language;
+    outVoice.textContent=option.value;outEngine.textContent=option.dataset.engine;
+    outLang.textContent=option.dataset.language;
+    count.textContent=text.value.length+" / "+LIMIT;
+  }
+  function insert(before,after){
+    // Insert at the caret so a tag lands where the presenter is actually editing.
+    var start=text.selectionStart,end=text.selectionEnd,value=text.value;
+    var selected=value.slice(start,end);
+    text.value=value.slice(0,start)+before+selected+(after||"")+value.slice(end);
+    text.focus();
+    var caret=start+before.length+selected.length+(after?after.length:0);
+    text.setSelectionRange(caret,caret);
+    sync();
+  }
+  voice.addEventListener("change",sync);
+  text.addEventListener("input",sync);
+  slide.querySelectorAll(".lab-tag").forEach(function(button){
+    button.addEventListener("click",function(){
+      if(button.dataset.wrap==="spell"){insert("<spell>","</spell>");return}
+      insert(button.dataset.insert,"");
+    });
+  });
+  function finished(){active=false;play.disabled=false;stop.hidden=true;
+    play.textContent="\u25B6 อ่านออกเสียงผ่าน WebRTC"}
+  play.addEventListener("click",async function(){
+    var script=text.value.trim();
+    if(!script){say("err","กรุณาพิมพ์ข้อความก่อนฟังเสียง");text.focus();return}
+    if(!window.FsiWebRTC){say("err","ยังโหลดโมดูลเสียงไม่สำเร็จ กรุณารีเฟรชหน้า");return}
+    active=true;play.disabled=true;play.textContent="กำลังเชื่อมต่อ…";say("","กำลังขอใช้ไมโครโฟนและเปิดสายเสียง…");
+    try{
+      await FsiWebRTC.startCall({
+        api:"/call", audioElement:document.getElementById("meeting-audio"),
+        request:{action:"voicelab",text:script,voice:voice.value,engine:engine(),language:lang.value},
+        onState:function(event){
+          if(event.state==="connected"){stop.hidden=false;play.textContent="กำลังอ่านออกเสียง…";
+            say("ok","กำลังอ่านออกเสียงด้วยเสียง "+voice.value)}
+          if(event.state==="ended"){say("","อ่านจบแล้ว ปรับข้อความหรือเปลี่ยนเสียงแล้วลองอีกครั้งได้");finished()}
+        }
+      });
+    }catch(error){
+      // Connect WebRTC opens a two-way media session, so a mic is required even
+      // though the lab only plays audio back. Both failure modes are common on
+      // presenter laptops, and the raw browser strings are English.
+      var name=(error&&error.name)||"",message=(error&&error.message)||"";
+      var denied=name==="NotAllowedError"||/permission|denied/i.test(message);
+      var missing=name==="NotFoundError"||name==="OverconstrainedError"
+        ||/device not found|no.*device/i.test(message);
+      say("err",denied?"กรุณาอนุญาตการใช้ไมโครโฟนในเบราว์เซอร์ แล้วลองอีกครั้ง"
+        :missing?"ไม่พบไมโครโฟน — Amazon Connect WebRTC ต้องเปิดสายสองทาง กรุณาต่อไมโครโฟนแล้วลองอีกครั้ง"
+        :message||"ยังเริ่มการอ่านออกเสียงไม่ได้");
+      finished();
+    }
+  });
+  stop.addEventListener("click",async function(){stop.disabled=true;
+    try{await FsiWebRTC.stopCall()}finally{stop.disabled=false}});
+  sync();
+})();
 </script>
 </body>
 </html>

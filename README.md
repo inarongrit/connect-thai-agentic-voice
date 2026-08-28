@@ -178,3 +178,31 @@ always enforced and blocking.
 ## License
 
 MIT-0. See [LICENSE](LICENSE).
+
+## Voice lab (slide 06)
+
+Slide 06 reads supplied text aloud so you can compare voices without editing a flow.
+It posts `{"action":"voicelab"}` to the same `/call` endpoint and starts a WebRTC
+contact into a small dedicated flow (`iac/mantle-voice-lab-flow.json`).
+
+Deployment needs two things beyond the web assets:
+
+1. Create the flow and set `VOICE_LAB_FLOW_ID` on the trigger Lambda. Without it the
+   action returns `403 voice lab is not enabled`, so the slide fails closed.
+2. Rebuild the browser bundle after touching `web/webrtc-client.js`:
+   `cd web && npm run build:webrtc`. The lab relies on the `request` override that
+   lets a caller post a different body than the three scenario journeys.
+
+Behaviour worth knowing:
+
+- **A microphone is required.** Amazon Connect WebRTC opens a two-way media session
+  even though the lab only plays audio back.
+- **Mood and tone use agentic speech control tags, not SSML** — `<speed ratio>`,
+  `<volume ratio>`, `<break time>`, `<spell>`, `<emotion value>` (beta) and
+  `[laughter]`. Unsupported wrappers such as `<speak>` and any malformed tag are
+  **spoken aloud** rather than ignored.
+- **No single voice covers Thai and English.** The multilingual (polyglot) voices —
+  Katie, Blake, Brooke, Ronald, Gemma — do not list Thai, so Thai needs a Thai voice.
+- The flow sets a known-good Thai voice *before* applying the requested one, and every
+  override sits on an error branch that falls through. An unsupported voice therefore
+  degrades to Thai instead of dropping the caller.

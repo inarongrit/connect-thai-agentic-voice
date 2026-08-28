@@ -1,0 +1,122 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "lab-logging",
+  "Metadata": {
+    "entryPointPosition": {
+      "x": 20,
+      "y": 20
+    },
+    "snapToGrid": false,
+    "name": "FSI Voice Lab",
+    "type": "contactFlow",
+    "status": "published",
+    "ActionMetadata": {}
+  },
+  "Actions": [
+    {
+      "Identifier": "lab-logging",
+      "Type": "UpdateFlowLoggingBehavior",
+      "Parameters": {
+        "FlowLoggingBehavior": "Enabled"
+      },
+      "Transitions": {
+        "NextAction": "lab-default-voice",
+        "Conditions": [],
+        "Errors": []
+      }
+    },
+    {
+      "Identifier": "lab-default-voice",
+      "Type": "UpdateContactTextToSpeechVoice",
+      "Parameters": {
+        "TextToSpeechVoice": "SUDA",
+        "TextToSpeechEngine": "connect:agentic"
+      },
+      "Transitions": {
+        "NextAction": "lab-language",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "lab-language",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "lab-language",
+      "Type": "UpdateContactData",
+      "Parameters": {
+        "LanguageCode": "$.Attributes.labLanguage"
+      },
+      "Transitions": {
+        "NextAction": "lab-voice",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "lab-voice",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "lab-voice",
+      "Type": "UpdateContactTextToSpeechVoice",
+      "Parameters": {
+        "TextToSpeechVoice": "$.Attributes.labVoice",
+        "TextToSpeechEngine": "$.Attributes.labEngine"
+      },
+      "Transitions": {
+        "NextAction": "lab-speak",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "lab-speak",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "lab-speak",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "$.Attributes.labText"
+      },
+      "Transitions": {
+        "NextAction": "lab-outro",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "lab-outro",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "lab-outro",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "จบตัวอย่างเสียงค่ะ ขอบคุณค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "lab-end",
+        "Conditions": [],
+        "Errors": [
+          {
+            "NextAction": "lab-end",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "lab-end",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}

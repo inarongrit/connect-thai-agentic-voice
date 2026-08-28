@@ -18,6 +18,17 @@ CONTACT_FLOW_ID = os.environ["CONTACT_FLOW_ID"]
 SOURCE_PHONE = os.environ["SOURCE_PHONE"]
 ORIGIN_SECRET = os.environ.get("ORIGIN_SECRET", "")
 MANTLE_CONTACT_FLOW_ID = os.environ.get("MANTLE_CONTACT_FLOW_ID", "")
+VOICE_LAB_FLOW_ID = os.environ.get("VOICE_LAB_FLOW_ID", "")
+
+# Voice lab: read arbitrary supplied text aloud in a chosen voice. The text is spoken to
+# whoever started the call and is never stored, but it still reaches a paid TTS engine, so
+# it is capped and the surrounding fields are allowlisted rather than passed through.
+VOICE_LAB_TEXT_LIMIT = 600
+VOICE_LAB_ENGINES = {"connect:agentic", "neural", "generative", "standard"}
+VOICE_LAB_LANGUAGE_RE = re.compile(r"^[a-z]{2}-[A-Z]{2}$")
+# A voice name, not free text: the value is only ever read back as a voice identifier, and
+# an unknown one makes the flow fall back to its baseline Thai voice.
+VOICE_LAB_VOICE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,31}$")
 MANTLE_ENABLED = os.environ.get("MANTLE_ENABLED", "false").lower() == "true"
 
 VALID_SCENARIOS = {"bank", "insurance", "broker"}
@@ -401,6 +412,49 @@ def _start_pstn(body, attributes, flow_id, brain_mode):
     )
 
 
+def _voice_lab(body):
+    """Start a WebRTC call that reads the supplied script aloud, then ends."""
+    if not VOICE_LAB_FLOW_ID:
+        return _resp(403, {"error": "voice lab is not enabled"})
+    text = str(body.get("text", "")).strip()
+    if not text:
+        return _resp(400, {"error": "text is required"})
+    if len(text) > VOICE_LAB_TEXT_LIMIT:
+        return _resp(400, {"error": f"text must be {VOICE_LAB_TEXT_LIMIT} characters or fewer"})
+    voice = str(body.get("voice", "SUDA")).strip()
+    if not VOICE_LAB_VOICE_RE.match(voice):
+        return _resp(400, {"error": "voice name is not valid"})
+    engine = str(body.get("engine", "connect:agentic")).strip()
+    if engine not in VOICE_LAB_ENGINES:
+        return _resp(400, {"error": "engine must be one of: " + ", ".join(sorted(VOICE_LAB_ENGINES))})
+    language = str(body.get("language", "th-TH")).strip()
+    if not VOICE_LAB_LANGUAGE_RE.match(language):
+        return _resp(400, {"error": "language must look like th-TH"})
+    result = connect.start_web_rtc_contact(
+        InstanceId=INSTANCE_ID,
+        ContactFlowId=VOICE_LAB_FLOW_ID,
+        ParticipantDetails={"DisplayName": "Voice lab"},
+        Attributes={
+            "labText": text,
+            "labVoice": voice,
+            "labEngine": engine,
+            "labLanguage": language,
+            "channelMode": "webrtc",
+            "scenario": "voicelab",
+        },
+    )
+    return _resp(200, {
+        "mode": "webrtc",
+        "voice": voice,
+        "engine": engine,
+        "language": language,
+        "contactId": result["ContactId"],
+        "participantId": result["ParticipantId"],
+        "participantToken": result["ParticipantToken"],
+        "connectionData": result["ConnectionData"],
+    })
+
+
 def handler(event, context):
     headers = {str(key).lower(): str(value) for key, value in (event.get("headers") or {}).items()}
     supplied_secret = headers.get("x-fsi-origin-key", "")
@@ -423,6 +477,13 @@ def handler(event, context):
         except Exception as error:  # noqa: BLE001
             print(f"Contact status failed: {error}")
             return _resp(500, {"error": "failed to read call status"})
+
+    if str(body.get("action", "")).strip().lower() == "voicelab":
+        try:
+            return _voice_lab(body)
+        except Exception as error:  # noqa: BLE001
+            print(f"Voice lab start failed: {error}")
+            return _resp(500, {"error": "failed to start voice preview"})
 
     if str(body.get("action", "")).strip().lower() == "feedback":
         try:

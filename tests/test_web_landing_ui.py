@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -218,15 +219,19 @@ class SingleEngineAndChannelOrderTests(unittest.TestCase):
     def test_live_call_panel_shows_no_option_label(self):
         self.assertIn('callDetail.textContent="Thai voice AI · WebRTC · SUDA"', self.html)
 
-    def test_bundle_fallback_is_unreachable_so_no_rebuild_is_required(self):
-        """`webrtc.bundle.js` still minifies an older `|| "managed"` default.
+    def test_bundle_matches_source_after_the_voice_lab_rebuild(self):
+        """The bundle was rebuilt for the voice lab, so its defaults match source.
 
-        It can never fire because the page passes `brainMode` on every call. If a
-        call site ever stops passing it, rebuild the bundle
-        (`npm run build:webrtc`) before relying on the default.
+        Before the rebuild it still minified a stale `|| "managed"` default that
+        source had already changed to `mantle`. Rebuilding removed the mismatch and
+        compiled in the `request` override the voice lab posts. Rebuild with
+        `npm run build:webrtc` after touching `webrtc-client.js`.
         """
         bundle = (ROOT / "web" / "webrtc.bundle.js").read_text()
-        self.assertIn('brainMode:i||"managed"', bundle)
+        self.assertNotIn('brainMode:i||"managed"', bundle)
+        self.assertIn('||"mantle"', bundle)
+        # The voice lab depends on this override reaching the compiled bundle.
+        self.assertIn('JSON.stringify(s||{mode:"webrtc"', bundle)
         self.assertNotIn("startCall({api:API,scenario,name:nameInput.value.trim(),audioElement",
                          self.html)
         self.assertIn("brainMode:BRAIN_MODE,audioElement", self.html)
@@ -291,7 +296,8 @@ class RuntimeArchitectureSlideTests(unittest.TestCase):
     SLIDE = HTML[START:END]
 
     def test_it_is_a_true_fifth_slide(self):
-        self.assertEqual(self.HTML.count('<section class="slide'), 5)
+        # Six slides since the voice lab landed; the runtime architecture is still 05.
+        self.assertEqual(self.HTML.count('<section class="slide'), 6)
         self.assertIn('"How It Actually Runs"', self.HTML)
         self.assertIn('content:"05"', self.HTML)
 
@@ -482,3 +488,92 @@ class CyberpunkQrPageTests(unittest.TestCase):
 
     def test_the_page_is_not_indexed(self):
         self.assertIn('name="robots" content="noindex,nofollow"', self.QR)
+
+
+class VoiceLabSlideTests(unittest.TestCase):
+    """Slide 06 reads supplied text aloud through the existing WebRTC path."""
+
+    HTML = (ROOT / "web" / "index.html").read_text()
+
+    def test_it_is_a_sixth_slide_with_its_own_nav_entry(self):
+        self.assertIn('id="voice-lab"', self.HTML)
+        self.assertIn('content:"06"', self.HTML)
+        self.assertIn('"Voice Lab"', self.HTML)
+
+    def test_the_voice_dropdown_carries_engine_and_locale_per_voice(self):
+        """Each voice needs its own engine and locale, not one global default.
+
+        Thai is not a multilingual-voice language, so Suda ships th-TH while the
+        polyglot voices ship en-US.
+        """
+        self.assertIn('<option value="SUDA" data-engine="connect:agentic" '
+                      'data-language="th-TH" selected>', self.HTML)
+        for voice in ("Katie", "Blake", "Brooke", "Ronald", "Gemma"):
+            self.assertIn(f'<option value="{voice}" data-engine="connect:agentic" '
+                          'data-language="en-US">', self.HTML)
+
+    def test_it_offers_the_agentic_speech_control_tags(self):
+        for tag in ("&lt;break time=&quot;500ms&quot;/&gt;",
+                    "&lt;speed ratio=&quot;0.85&quot;/&gt;",
+                    "&lt;volume ratio=&quot;1.5&quot;/&gt;",
+                    "&lt;emotion value=&quot;content&quot;/&gt;",
+                    "[laughter]"):
+            self.assertIn(tag, self.HTML)
+        self.assertIn('data-wrap="spell"', self.HTML)
+
+    def test_it_documents_that_ssml_is_not_supported(self):
+        """The engine speaks malformed tags aloud, so the page must not imply SSML."""
+        self.assertIn("Control tags, not SSML", self.HTML)
+        self.assertIn("&lt;speak&gt;", self.HTML)
+
+    def test_it_warns_that_multilingual_voices_exclude_thai(self):
+        self.assertIn("Thai needs a Thai voice", self.HTML)
+
+    def test_it_translates_microphone_failures_instead_of_showing_browser_english(self):
+        """A presenter laptop without a mic otherwise shows "Requested device not found"."""
+        self.assertIn('name==="NotFoundError"', self.HTML)
+        self.assertIn('name==="NotAllowedError"', self.HTML)
+        self.assertIn("ไม่พบไมโครโฟน", self.HTML)
+        self.assertIn("กรุณาอนุญาตการใช้ไมโครโฟน", self.HTML)
+
+    def test_it_states_the_microphone_requirement_up_front(self):
+        self.assertIn("ต้องมีไมโครโฟน", self.HTML)
+
+    def test_it_posts_the_voicelab_action_and_caps_length(self):
+        self.assertIn('action:"voicelab"', self.HTML)
+        self.assertIn('maxlength="600"', self.HTML)
+
+
+class VoiceLabFlowTests(unittest.TestCase):
+    """The lab flow must degrade rather than drop the caller."""
+
+    FLOW = json.loads((ROOT / "iac" / "mantle-voice-lab-flow.json").read_text())
+
+    def _action(self, identifier):
+        return next(a for a in self.FLOW["Actions"] if a["Identifier"] == identifier)
+
+    def test_a_known_good_thai_voice_is_set_before_any_override(self):
+        """An unsupported requested voice must fall back to something that works."""
+        baseline = self._action("lab-default-voice")
+        self.assertEqual(baseline["Parameters"]["TextToSpeechVoice"], "SUDA")
+        self.assertEqual(baseline["Parameters"]["TextToSpeechEngine"], "connect:agentic")
+
+    def test_the_requested_voice_and_locale_come_from_attributes(self):
+        override = self._action("lab-voice")
+        self.assertEqual(override["Parameters"]["TextToSpeechVoice"], "$.Attributes.labVoice")
+        self.assertEqual(override["Parameters"]["TextToSpeechEngine"], "$.Attributes.labEngine")
+        self.assertEqual(self._action("lab-language")["Parameters"]["LanguageCode"],
+                         "$.Attributes.labLanguage")
+
+    def test_every_override_failure_still_reaches_the_prompt(self):
+        """A failed Set voice or Set language must not disconnect the caller."""
+        for identifier in ("lab-language", "lab-voice"):
+            errors = self._action(identifier)["Transitions"]["Errors"]
+            self.assertTrue(errors, f"{identifier} has no error branch")
+            for error in errors:
+                self.assertIn(error["NextAction"], {"lab-voice", "lab-speak"})
+
+    def test_it_speaks_the_supplied_text_then_hangs_up(self):
+        self.assertEqual(self._action("lab-speak")["Parameters"]["Text"],
+                         "$.Attributes.labText")
+        self.assertEqual(self._action("lab-end")["Type"], "DisconnectParticipant")
