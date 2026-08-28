@@ -539,6 +539,18 @@ class VoiceLabSlideTests(unittest.TestCase):
     def test_it_states_the_microphone_requirement_up_front(self):
         self.assertIn("ต้องมีไมโครโฟน", self.HTML)
 
+    def test_a_typed_voice_name_overrides_the_dropdown(self):
+        """No list can be authoritative because Connect accepts unknown voice names."""
+        self.assertIn('id="lab-custom-voice"', self.HTML)
+        self.assertIn('maxlength="32"', self.HTML)
+        self.assertIn("function chosenVoice(){return custom.value.trim()||voice.value}",
+                      self.HTML)
+        self.assertIn('voice:chosenVoice()', self.HTML)
+
+    def test_a_typed_voice_carries_its_own_locale(self):
+        self.assertIn('id="lab-custom-language"', self.HTML)
+        self.assertIn('<option value="th-TH" selected>th-TH</option>', self.HTML)
+
     def test_it_posts_the_voicelab_action_and_caps_length(self):
         self.assertIn('action:"voicelab"', self.HTML)
         self.assertIn('maxlength="600"', self.HTML)

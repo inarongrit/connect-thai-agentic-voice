@@ -540,6 +540,18 @@ html[data-theme="red-orbit"] .status.success,html[data-theme="red-orbit"] .call-
         <input id="lab-language" value="th-TH" readonly aria-readonly="true">
       </label>
     </div>
+    <div class="lab-row">
+      <label class="lab-field"><span>Custom voice · overrides dropdown</span>
+        <input id="lab-custom-voice" maxlength="32" spellcheck="false"
+               placeholder="เช่น Somchai — พิมพ์ชื่อจาก Set voice ในคอนโซล">
+      </label>
+      <label class="lab-field"><span>Locale for custom voice</span>
+        <select id="lab-custom-language">
+          <option value="th-TH" selected>th-TH</option>
+          <option value="en-US">en-US</option>
+        </select>
+      </label>
+    </div>
     <label class="lab-field" style="flex:1"><span>Script · ไทย + English</span>
       <textarea id="lab-text" maxlength="600" spellcheck="false" placeholder="พิมพ์ข้อความที่ต้องการให้อ่านออกเสียง">สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติค่ะ ยอดที่ต้องชำระคือ หนึ่งหมื่นห้าพันห้าร้อยบาท ครบกำหนด 15 สิงหาคม 2569 ค่ะ Thank you for using Amazon Connect agentic voice.</textarea>
     </label>
@@ -613,13 +625,22 @@ window.addEventListener("beforeunload",()=>{if(FsiWebRTC?.isActive?.())FsiWebRTC
       status=document.getElementById("lab-status"),
       outVoice=document.getElementById("lab-out-voice"),outEngine=document.getElementById("lab-out-engine"),
       outLang=document.getElementById("lab-out-language"),LIMIT=600,active=false;
-  function engine(){return voice.selectedOptions[0].dataset.engine}
+  var custom=document.getElementById("lab-custom-voice"),
+      customLang=document.getElementById("lab-custom-language");
+  // Connect's validator accepts unknown voice names, so no list can be authoritative.
+  // A typed name wins; the flow falls back to Thai if the engine rejects it at runtime.
+  function chosenVoice(){return custom.value.trim()||voice.value}
+  function chosenLanguage(){
+    return custom.value.trim()?customLang.value:voice.selectedOptions[0].dataset.language}
+  function engine(){
+    return custom.value.trim()?"connect:agentic":voice.selectedOptions[0].dataset.engine}
   function say(kind,message){status.className="lab-status"+(kind?" "+kind:"");status.textContent=message||""}
   function sync(){
-    var option=voice.selectedOptions[0];
-    lang.value=option.dataset.language;
-    outVoice.textContent=option.value;outEngine.textContent=option.dataset.engine;
-    outLang.textContent=option.dataset.language;
+    lang.value=chosenLanguage();
+    outVoice.textContent=chosenVoice();
+    outEngine.textContent=engine();
+    outLang.textContent=chosenLanguage();
+    voice.disabled=!!custom.value.trim();
     count.textContent=text.value.length+" / "+LIMIT;
   }
   function insert(before,after){
@@ -634,6 +655,8 @@ window.addEventListener("beforeunload",()=>{if(FsiWebRTC?.isActive?.())FsiWebRTC
   }
   voice.addEventListener("change",sync);
   text.addEventListener("input",sync);
+  custom.addEventListener("input",sync);
+  customLang.addEventListener("change",sync);
   slide.querySelectorAll(".lab-tag").forEach(function(button){
     button.addEventListener("click",function(){
       if(button.dataset.wrap==="spell"){insert("<spell>","</spell>");return}
@@ -650,10 +673,11 @@ window.addEventListener("beforeunload",()=>{if(FsiWebRTC?.isActive?.())FsiWebRTC
     try{
       await FsiWebRTC.startCall({
         api:"/call", audioElement:document.getElementById("meeting-audio"),
-        request:{action:"voicelab",text:script,voice:voice.value,engine:engine(),language:lang.value},
+        request:{action:"voicelab",text:script,voice:chosenVoice(),
+                 engine:engine(),language:chosenLanguage()},
         onState:function(event){
           if(event.state==="connected"){stop.hidden=false;play.textContent="กำลังอ่านออกเสียง…";
-            say("ok","กำลังอ่านออกเสียงด้วยเสียง "+voice.value)}
+            say("ok","กำลังอ่านออกเสียงด้วยเสียง "+chosenVoice())}
           if(event.state==="ended"){say("","อ่านจบแล้ว ปรับข้อความหรือเปลี่ยนเสียงแล้วลองอีกครั้งได้");finished()}
         }
       });
