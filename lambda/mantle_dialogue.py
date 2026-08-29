@@ -876,20 +876,37 @@ _THAI_DAY_UNITS = {
     "ห้า": 5, "หก": 6, "เจ็ด": 7, "แปด": 8, "เก้า": 9,
 }
 # Longest form first so "กุมภาพันธ์" is matched before "กุมภา".
+# (token, days in month, month number). Longest token first so "มกราคม" is matched
+# before "มกรา" and "ม.ค." before "มค". Abbreviations are included because ASR returns
+# them and a tester used one: "32 ม.ค." walked straight through the first version.
 _THAI_MONTH_DAYS = (
-    ("มกราคม", 31), ("มกรา", 31),
-    ("กุมภาพันธ์", 29), ("กุมภา", 29),
-    ("มีนาคม", 31), ("มีนา", 31),
-    ("เมษายน", 30), ("เมษา", 30),
-    ("พฤษภาคม", 31), ("พฤษภา", 31),
-    ("มิถุนายน", 30), ("มิถุนา", 30),
-    ("กรกฎาคม", 31), ("กรกฎา", 31),
-    ("สิงหาคม", 31), ("สิงหา", 31),
-    ("กันยายน", 30), ("กันยา", 30),
-    ("ตุลาคม", 31), ("ตุลา", 31),
-    ("พฤศจิกายน", 30), ("พฤศจิกา", 30),
-    ("ธันวาคม", 31), ("ธันวา", 31),
+    ("มกราคม", 31, 1), ("มกรา", 31, 1), ("ม.ค.", 31, 1), ("มค", 31, 1),
+    ("กุมภาพันธ์", 29, 2), ("กุมภา", 29, 2), ("ก.พ.", 29, 2), ("กพ", 29, 2),
+    ("มีนาคม", 31, 3), ("มีนา", 31, 3), ("มี.ค.", 31, 3), ("มีค", 31, 3),
+    ("เมษายน", 30, 4), ("เมษา", 30, 4), ("เม.ย.", 30, 4), ("เมย", 30, 4),
+    ("พฤษภาคม", 31, 5), ("พฤษภา", 31, 5), ("พ.ค.", 31, 5), ("พค", 31, 5),
+    ("มิถุนายน", 30, 6), ("มิถุนา", 30, 6), ("มิ.ย.", 30, 6), ("มิย", 30, 6),
+    ("กรกฎาคม", 31, 7), ("กรกฎา", 31, 7), ("ก.ค.", 31, 7), ("กค", 31, 7),
+    ("สิงหาคม", 31, 8), ("สิงหา", 31, 8), ("ส.ค.", 31, 8), ("สค", 31, 8),
+    ("กันยายน", 30, 9), ("กันยา", 30, 9), ("ก.ย.", 30, 9), ("กย", 30, 9),
+    ("ตุลาคม", 31, 10), ("ตุลา", 31, 10), ("ต.ค.", 31, 10), ("ตค", 31, 10),
+    ("พฤศจิกายน", 30, 11), ("พฤศจิกา", 30, 11), ("พ.ย.", 30, 11), ("พย", 30, 11),
+    ("ธันวาคม", 31, 12), ("ธันวา", 31, 12), ("ธ.ค.", 31, 12), ("ธค", 31, 12),
 )
+_MONTH_DAYS_BY_NUMBER = {number: days for _, days, number in _THAI_MONTH_DAYS}
+# The first token for each month is its full name. Corrections are spoken aloud, so an
+# abbreviation would be read out as "ม.ค." rather than "มกราคม".
+_MONTH_NAME_BY_NUMBER = {}
+for _token, _days, _number in _THAI_MONTH_DAYS:
+    _MONTH_NAME_BY_NUMBER.setdefault(_number, _token)
+_MONTH_NUMBER_BY_TOKEN = {token: number for token, _, number in _THAI_MONTH_DAYS}
+
+
+def _spoken_month(token_or_number):
+    """Always return the full Thai month name, whatever form the caller used."""
+    if isinstance(token_or_number, int):
+        return _MONTH_NAME_BY_NUMBER.get(token_or_number, "")
+    return _MONTH_NAME_BY_NUMBER.get(_MONTH_NUMBER_BY_TOKEN.get(token_or_number), token_or_number)
 _ARABIC_DIGITS = str.maketrans(
     "".join(chr(0x0E50 + n) for n in range(10)), "0123456789")
 
@@ -979,10 +996,26 @@ def _implausible_amount(state, raw):
 
 
 def _month_limit(text):
-    for name, days in _THAI_MONTH_DAYS:
+    for name, days, _ in _THAI_MONTH_DAYS:
         if name in text:
             return name, days
     return None, None
+
+
+def _leading_day(prefix):
+    """Parse the day sitting immediately before a month token.
+
+    Accepts digits or spoken Thai. The longest parsable suffix wins, so
+    "จะชำระสามสิบสอง" yields 32 rather than failing on the verb.
+    """
+    digits = re.search(r"([0-9]{1,2})$", prefix)
+    if digits:
+        return int(digits.group(1))
+    for index in range(len(prefix)):
+        value = _thai_words_to_int(prefix[index:])
+        if value is not None:
+            return value
+    return None
 
 
 PAST_DATE_RE = re.compile(
@@ -1021,32 +1054,50 @@ def _explicit_year(text):
 def _impossible_date(raw):
     """Return a spoken correction when the date cannot exist, otherwise None.
 
-    Only two shapes are inspected -- an explicit "วันที่ N" and "N <month>" -- so clock
-    times, "อีก 3 วัน" and years are never mistaken for a day of the month.
+    Deliberately conservative about what counts as a day: a false positive blocks a real
+    payment promise, which is worse than the bug. Dot-separated pairs are left alone
+    because "14.30" is a Thai clock time and this validator also guards callback times.
     """
     text = _despace(_compact(raw, 160)).translate(_ARABIC_DIGITS)
-    month_name, month_days = _month_limit(text)
-    day = None
-    digits = re.search(r"วันที่\s*([0-9]{1,2})(?![0-9:.])", text)
-    if not digits and month_name:
-        digits = re.search(r"([0-9]{1,2})\s*(?=" + re.escape(month_name) + r")", text)
-    if digits:
-        day = int(digits.group(1))
-    else:
-        words = re.search(r"วันที่\s*([ก-๙]+?)(?=$|[^ก-๙])", text)
-        if words:
-            day = _thai_words_to_int(words.group(1))
-            # A weekday or a relative word is not a numbered day.
-            if day is None:
-                return None
+
+    # 1. Numeric dd/mm. Slash and hyphen only -- a dot is ambiguous with a time.
+    for hit in re.finditer(r"(?<![0-9])([0-9]{1,2})[/-]([0-9]{1,2})(?![0-9])", text):
+        day, month_number = int(hit.group(1)), int(hit.group(2))
+        if month_number < 1 or month_number > 12:
+            return ("ขออภัยค่ะ เดือนที่แจ้งไม่ถูกต้องค่ะ "
+                    "กรุณาระบุวันและเดือนที่มีอยู่จริงอีกครั้งค่ะ")
+        limit = _MONTH_DAYS_BY_NUMBER[month_number]
+        if day < 1 or day > limit:
+            return (f"ขออภัยค่ะ เดือน{_spoken_month(month_number)}มีเพียง {limit} วันค่ะ "
+                    "กรุณาระบุวันที่ใหม่อีกครั้งค่ะ")
+
+    # 2. A month named by number: "เดือน 13".
+    numbered = re.search(r"เดือน([0-9]{1,2})(?![0-9])", text)
+    if numbered and not 1 <= int(numbered.group(1)) <= 12:
+        return ("ขออภัยค่ะ เดือนที่แจ้งไม่ถูกต้องค่ะ "
+                "กรุณาระบุเดือนระหว่าง 1 ถึง 12 อีกครั้งค่ะ")
+
+    # 3. A day beside a named month, in digits or spoken Thai, with or without วันที่.
+    for name, limit, _ in _THAI_MONTH_DAYS:
+        position = text.find(name)
+        if position < 0:
+            continue
+        day = _leading_day(text[:position])
+        if day is None:
+            break
+        if day < 1 or day > limit:
+            return (f"ขออภัยค่ะ เดือน{_spoken_month(name)}มีเพียง {limit} วันค่ะ "
+                    "กรุณาระบุวันที่ใหม่อีกครั้งค่ะ")
+        break
+
+    # 4. A bare "วันที่ N" with no month to check it against.
+    bare = re.search(r"วันที่([0-9]{1,2})(?![0-9:.])", text)
+    day = int(bare.group(1)) if bare else None
     if day is None:
-        return None
-    # Name the month when it is known: "ธันวาคมมี 31 วัน" tells the caller what was
-    # wrong, where a bare range does not.
-    if month_days and day > month_days:
-        return (f"ขออภัยค่ะ เดือน{month_name}มีเพียง {month_days} วันค่ะ "
-                "กรุณาระบุวันที่ใหม่อีกครั้งค่ะ")
-    if day < 1 or day > 31:
+        spoken = re.search(r"วันที่([ก-๙]+?)(?=$|[^ก-๙])", text)
+        if spoken:
+            day = _thai_words_to_int(spoken.group(1))
+    if day is not None and not 1 <= day <= 31:
         return ("ขออภัยค่ะ วันที่ที่แจ้งไม่มีอยู่ในปฏิทินค่ะ "
                 "กรุณาระบุวันที่ใหม่ระหว่าง 1 ถึง 31 อีกครั้งค่ะ")
     return None

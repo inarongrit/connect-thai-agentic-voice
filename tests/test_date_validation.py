@@ -131,3 +131,85 @@ class ConversationRecoveryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BypassMatrixTests(unittest.TestCase):
+    """A tester got "32 มกรา" through, so the whole input space is enumerated here.
+
+    The first version only inspected two shapes -- "วันที่ N" and "N <full month name>"
+    -- which left abbreviations, spoken numbers without วันที่, and dd/mm formats open.
+    Add any new form a tester finds to these lists rather than fixing it ad hoc.
+    """
+
+    IMPOSSIBLE = (
+        # Abbreviated months, dotted and bare, as ASR returns them.
+        "32 ม.ค.", "32 ก.พ.", "32 ธ.ค.", "วันที่ 32 ม.ค.", "32 มค", "32 กพ",
+        # Short month names.
+        "32 มกรา", "32 ธันวา", "วันที่ 32 ธันวาคม",
+        # Spoken numbers with no วันที่ to anchor them.
+        "สามสิบสองมกราคม", "สามสิบสอง มกราคม", "สามสิบสองธันวาคม", "วันที่สามสิบสอง",
+        # Numeric day/month.
+        "32/1", "32/12", "32-12", "1/32", "99/9", "1/13",
+        # A month named by number.
+        "วันที่ 1 เดือน 13",
+        # Days that exceed the specific month.
+        "30 กุมภาพันธ์", "31 เมษายน", "31 มิถุนายน", "31 กันยายน", "31 พฤศจิกายน",
+        # Out of range outright.
+        "วันที่ 32", "0 มกรา", "วันที่ ๓๒ ธันวาคม",
+    )
+
+    POSSIBLE = (
+        # Real dates, including month ends that do exist and the leap day.
+        "วันที่ 15 ธันวาคม", "วันที่ 29 กุมภาพันธ์", "วันที่ 30 เมษายน", "31 ธันวาคม",
+        "15 ม.ค.", "1 ก.พ.", "วันที่ 1", "วันที่สิบห้า", "วันที่ยี่สิบเอ็ด",
+        "15/12", "1/1", "28/2", "30/4",
+        "วันที่ 5 มกราคม 2570", "วันที่ 20 ธันวาคม 2569",
+        # Relative answers.
+        "พรุ่งนี้", "วันนี้", "มะรืนนี้", "วันศุกร์หน้า", "วันจันทร์หน้า",
+        "อีก 3 วัน", "ปลายเดือนนี้", "สิ้นเดือนนี้", "ต้นเดือนหน้า", "สัปดาห์หน้า",
+        # Times, because callback and appointment slots use the same validator. A dot
+        # separator is a Thai clock format, so dd.mm is deliberately not inspected.
+        "14:30", "14.30", "บ่าย 2 โมง", "เช้า 9 โมง",
+        # Amounts must never be read as dates.
+        "2000 บาท", "20000 บาท",
+    )
+
+    def setUp(self):
+        self.module = _load()
+
+    def test_every_impossible_form_is_rejected(self):
+        for text in self.IMPOSSIBLE:
+            with self.subTest(text=text):
+                self.assertIsNotNone(self.module._impossible_date(text),
+                                     f"{text} walked through the gate")
+
+    def test_no_legitimate_answer_is_rejected(self):
+        """A false positive blocks a real payment promise, which is worse than the bug."""
+        for text in self.POSSIBLE:
+            with self.subTest(text=text):
+                message = (self.module._impossible_date(text)
+                           or self.module._unusable_date(text))
+                self.assertIsNone(message, f"{text} was wrongly rejected: {message}")
+
+    def test_abbreviations_map_to_the_right_month_length(self):
+        for text in ("30 ก.พ.", "31 เม.ย.", "31 พ.ย."):
+            with self.subTest(text=text):
+                self.assertIsNotNone(self.module._impossible_date(text))
+        for text in ("29 ก.พ.", "30 เม.ย.", "30 พ.ย."):
+            with self.subTest(text=text):
+                self.assertIsNone(self.module._impossible_date(text))
+
+    def test_corrections_speak_the_full_month_name(self):
+        """Corrections are spoken, so "ม.ค." must not be read out as an abbreviation."""
+        for text, expected in (("32 ม.ค.", "มกราคม"), ("32 มกรา", "มกราคม"),
+                               ("30 ก.พ.", "กุมภาพันธ์"), ("32/1", "มกราคม"),
+                               ("32 ธ.ค.", "ธันวาคม")):
+            with self.subTest(text=text):
+                message = self.module._impossible_date(text)
+                self.assertIn(expected, message)
+                self.assertNotIn(".", message)
+
+    def test_the_day_before_a_month_is_parsed_out_of_a_sentence(self):
+        self.assertEqual(self.module._leading_day("จะชำระสามสิบสอง"), 32)
+        self.assertEqual(self.module._leading_day("จะชำระวันที่15"), 15)
+        self.assertIsNone(self.module._leading_day("จะชำระ"))
