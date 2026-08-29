@@ -842,8 +842,105 @@ def _extract_amount(text):
     return number.group().strip() if number else spoken
 
 
+# Testers probe a collections agent with dates that cannot exist -- "วันที่ 32 ธันวาคม".
+# The shape check that gates date capture only looks for digits, so an impossible date
+# was read back, confirmed and stored as a payment commitment the bank could never
+# collect on. Validate the calendar before the read-back.
+_THAI_DAY_UNITS = {
+    "ศูนย์": 0, "หนึ่ง": 1, "เอ็ด": 1, "สอง": 2, "สาม": 3, "สี่": 4,
+    "ห้า": 5, "หก": 6, "เจ็ด": 7, "แปด": 8, "เก้า": 9,
+}
+# Longest form first so "กุมภาพันธ์" is matched before "กุมภา".
+_THAI_MONTH_DAYS = (
+    ("มกราคม", 31), ("มกรา", 31),
+    ("กุมภาพันธ์", 29), ("กุมภา", 29),
+    ("มีนาคม", 31), ("มีนา", 31),
+    ("เมษายน", 30), ("เมษา", 30),
+    ("พฤษภาคม", 31), ("พฤษภา", 31),
+    ("มิถุนายน", 30), ("มิถุนา", 30),
+    ("กรกฎาคม", 31), ("กรกฎา", 31),
+    ("สิงหาคม", 31), ("สิงหา", 31),
+    ("กันยายน", 30), ("กันยา", 30),
+    ("ตุลาคม", 31), ("ตุลา", 31),
+    ("พฤศจิกายน", 30), ("พฤศจิกา", 30),
+    ("ธันวาคม", 31), ("ธันวา", 31),
+)
+_ARABIC_DIGITS = str.maketrans(
+    "".join(chr(0x0E50 + n) for n in range(10)), "0123456789")
+
+
+def _thai_words_to_int(word):
+    """Parse a spoken day such as สามสิบสอง (32) or ยี่สิบเอ็ด (21). None if unparsable."""
+    word = (word or "").strip()
+    if not word:
+        return None
+    if "สิบ" in word:
+        prefix, _, suffix = word.partition("สิบ")
+        if prefix in ("", "หนึ่ง"):
+            tens = 1
+        elif prefix == "ยี่":
+            tens = 2
+        elif prefix in _THAI_DAY_UNITS:
+            tens = _THAI_DAY_UNITS[prefix]
+        else:
+            return None
+        if suffix and suffix not in _THAI_DAY_UNITS:
+            return None
+        return tens * 10 + (_THAI_DAY_UNITS.get(suffix, 0) if suffix else 0)
+    return _THAI_DAY_UNITS.get(word)
+
+
+def _month_limit(text):
+    for name, days in _THAI_MONTH_DAYS:
+        if name in text:
+            return name, days
+    return None, None
+
+
+def _impossible_date(raw):
+    """Return a spoken correction when the date cannot exist, otherwise None.
+
+    Only two shapes are inspected -- an explicit "วันที่ N" and "N <month>" -- so clock
+    times, "อีก 3 วัน" and years are never mistaken for a day of the month.
+    """
+    text = _despace(_compact(raw, 160)).translate(_ARABIC_DIGITS)
+    month_name, month_days = _month_limit(text)
+    day = None
+    digits = re.search(r"วันที่\s*([0-9]{1,2})(?![0-9:.])", text)
+    if not digits and month_name:
+        digits = re.search(r"([0-9]{1,2})\s*(?=" + re.escape(month_name) + r")", text)
+    if digits:
+        day = int(digits.group(1))
+    else:
+        words = re.search(r"วันที่\s*([ก-๙]+?)(?=$|[^ก-๙])", text)
+        if words:
+            day = _thai_words_to_int(words.group(1))
+            # A weekday or a relative word is not a numbered day.
+            if day is None:
+                return None
+    if day is None:
+        return None
+    # Name the month when it is known: "ธันวาคมมี 31 วัน" tells the caller what was
+    # wrong, where a bare range does not.
+    if month_days and day > month_days:
+        return (f"ขออภัยค่ะ เดือน{month_name}มีเพียง {month_days} วันค่ะ "
+                "กรุณาระบุวันที่ใหม่อีกครั้งค่ะ")
+    if day < 1 or day > 31:
+        return ("ขออภัยค่ะ วันที่ที่แจ้งไม่มีอยู่ในปฏิทินค่ะ "
+                "กรุณาระบุวันที่ใหม่ระหว่าง 1 ถึง 31 อีกครั้งค่ะ")
+    return None
+
+
 def _set_pending(state, field, raw):
     extractor = _extract_amount if field == "paymentAmount" else _extract_when
+    if field != "paymentAmount":
+        # Every captured date reaches its read-back through here, so this is the one
+        # place that has to reject an impossible one. Pending is left unset so the
+        # stage asks again instead of confirming something that cannot happen.
+        correction = _impossible_date(raw)
+        if correction:
+            state.pop("pending", None)
+            return correction
     state["pending"] = {"field": field, "raw": _compact(extractor(raw), 120)}
     return _readback(state, field, state["pending"]["raw"])
 
