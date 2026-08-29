@@ -60,6 +60,10 @@ def _has_latin_words(text):
     """
     import re
     stripped = re.sub(r"\$\.[A-Za-z.]+", "", text)
+    # Agentic speech-control tags configure synthesis and are never spoken. Strip only
+    # the documented tag shapes; malformed tags must remain visible to this audit.
+    stripped = re.sub(r'<(?:volume|speed) ratio="[0-9.]+"/>|<break time="[0-9]+(?:ms|s)"/>',
+                      "", stripped)
     return bool(re.search(r"[A-Za-z]{3,}", stripped))
 
 
@@ -282,6 +286,24 @@ class ThaiHandoffAudioTests(unittest.TestCase):
         brief = " ".join(_texts(WHISPER))
         self.assertIn("$.Attributes.handoffReason", brief)
         self.assertIn("$.Attributes.handoffSummary", brief)
+
+    def test_agent_whisper_is_louder_without_changing_the_briefing(self):
+        """The volume tag is agentic TTS and applies only to the agent whisper."""
+        brief = " ".join(_texts(WHISPER))
+        self.assertTrue(brief.startswith('<volume ratio="1.5"/>'))
+        self.assertEqual(brief.count('<volume ratio="1.5"/>'), 1)
+        self.assertIn("สายโอนจากผู้ช่วยอัตโนมัติ", brief)
+        self.assertIn("$.Attributes.handoffReason", brief)
+        self.assertIn("$.Attributes.handoffSummary", brief)
+
+    def test_customer_queue_does_not_misuse_a_tts_volume_tag(self):
+        """The hold loop is a WAV PromptId, so a text tag would have no effect."""
+        loop = {a["Identifier"]: a for a in QUEUE["Actions"]}["queue-hold-loop"]
+        prompts = [message["PromptId"] for message in loop["Parameters"]["Messages"]
+                   if "PromptId" in message]
+        self.assertEqual(prompts, ["${HoldPromptArn}"])
+        for message in loop["Parameters"]["Messages"]:
+            self.assertNotIn("<volume", message.get("Text", ""))
 
     def test_hold_uses_the_loop_block_not_wait(self):
         """Wait fails at runtime in a queue flow and must not come back.

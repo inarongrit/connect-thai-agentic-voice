@@ -35,7 +35,7 @@
       "Identifier": "whisper-brief",
       "Type": "MessageParticipant",
       "Parameters": {
-        "Text": "สายโอนจากผู้ช่วยอัตโนมัติค่ะ เหตุผล $.Attributes.handoffReason รายละเอียด $.Attributes.handoffSummary"
+        "Text": "<volume ratio=\"1.5\"/>สายโอนจากผู้ช่วยอัตโนมัติค่ะ เหตุผล $.Attributes.handoffReason รายละเอียด $.Attributes.handoffSummary"
       },
       "Transitions": {
         "NextAction": "whisper-end",

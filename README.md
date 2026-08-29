@@ -211,3 +211,30 @@ Behaviour worth knowing:
 - The flow sets a known-good Thai voice *before* applying the requested one, and every
   override sits on an error branch that falls through. An unsupported voice therefore
   degrades to Thai instead of dropping the caller.
+
+## Handoff audio levels
+
+The customer queue and agent whisper use independent audio controls:
+
+- **Customer hold audio:** the live Connect prompt `CustomerQueue.wav` is a stored
+  G.711 μ-law, mono, 8 kHz WAV. Speech-control tags do not affect a stored prompt.
+  Its deployed asset is attenuated to **0.5 signal amplitude** (`-6.02 dB`) and the
+  original is kept privately at
+  `s3://<DEMO_BUCKET>/prompt-backups/CustomerQueue-original-20260829.wav`
+  for rollback. The quieter source is private at
+  `s3://<DEMO_BUCKET>/prompt-assets/CustomerQueue-50.wav`.
+- **Agent whisper:** `iac/mantle-agent-whisper-flow.json` uses agentic TTS, so the
+  briefing begins with `<volume ratio="1.5"/>`. This raises only what the agent hears;
+  it does not alter the caller's queue audio.
+
+To recreate the hold asset from a downloaded Connect prompt while preserving the
+required telephony format:
+
+```bash
+ffmpeg -i CustomerQueue-original.wav -af 'volume=0.5' \
+  -ar 8000 -ac 1 -c:a pcm_mulaw CustomerQueue-50.wav
+```
+
+Verify with `ffmpeg -i <file> -af volumedetect -f null -`: mean and maximum levels
+should each move down by approximately 6.02 dB while duration, codec, sample rate and
+channel count remain unchanged.
