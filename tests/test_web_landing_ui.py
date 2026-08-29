@@ -593,3 +593,67 @@ class VoiceLabFlowTests(unittest.TestCase):
         self.assertEqual(self._action("lab-speak")["Parameters"]["Text"],
                          "$.Attributes.labText")
         self.assertEqual(self._action("lab-end")["Type"], "DisconnectParticipant")
+
+
+class RepeatableHudInteractionTests(unittest.TestCase):
+    """Slides 2–4 must feel interactive on every click, not only the first desktop click.
+
+    Mobile previously used display:none/display:grid for the staged panels. Display is
+    not animatable, so the HUD jumped even though desktop had transition declarations.
+    Slides 3–4 also had no close action and Auto Tour changed text without impact feedback.
+    """
+
+    HTML = (ROOT / "web" / "index.html").read_text()
+
+    def test_both_staged_huds_have_accessible_close_controls(self):
+        self.assertEqual(self.HTML.count('class="staged-close"'), 2)
+        self.assertIn('aria-label="ปิดรายละเอียดและกลับไปเลือกบริการ"', self.HTML)
+        self.assertIn('aria-label="ปิดรายละเอียดและกลับไปเลือกหลักฐาน"', self.HTML)
+        self.assertIn('if(close)close.addEventListener("click",()=>closeDetails())', self.HTML)
+        self.assertIn('event.key==="Escape"', self.HTML)
+
+    def test_close_restores_the_prompt_and_clears_selection(self):
+        for marker in (
+            'group.classList.remove("detail-open")',
+            'nodes.forEach(item=>item.setAttribute("aria-pressed","false"))',
+            'stagedPrompt.setAttribute("aria-hidden","false")',
+            'lastNode.focus({preventScroll:true})',
+        ):
+            self.assertIn(marker, self.HTML)
+
+    def test_mobile_does_not_toggle_the_staged_hud_with_display_none(self):
+        """The later override must win over the legacy rule and retain transition frames."""
+        self.assertIn('.staged-board .atlas-lower{display:grid!important;max-height:0;', self.HTML)
+        self.assertIn('.staged-board.detail-open .atlas-lower{max-height:1100px;', self.HTML)
+        self.assertIn('.staged-board.detail-open .staged-prompt{display:flex!important;max-height:0;',
+                      self.HTML)
+        self.assertIn('transition:max-height .86s', self.HTML)
+
+    def test_mobile_mission_and_proof_huds_animate_height_and_visibility(self):
+        self.assertIn('.mission-board .atlas-lower{display:block!important;max-height:0;', self.HTML)
+        self.assertIn('.mission-board.mission-selected .atlas-lower{max-height:1050px;', self.HTML)
+        self.assertIn('.mission-board.mission-proof-open .atlas-evidence{max-height:620px;',
+                      self.HTML)
+
+    def test_every_selection_restarts_a_visible_data_refresh(self):
+        for marker in (
+            'lowerPanel.classList.remove("hud-switching")',
+            'lowerPanel.classList.add("hud-switching")',
+            '@keyframes hudDataSweep',
+            '@keyframes hudDataRefresh',
+            'node.classList.add("is-impacting","hud-clicked")',
+        ):
+            self.assertIn(marker, self.HTML)
+
+    def test_auto_tour_uses_the_same_impact_feedback_as_a_real_click(self):
+        self.assertIn('group._atlasImpact=impact', self.HTML)
+        self.assertIn('if(group._atlasImpact)group._atlasImpact(node)', self.HTML)
+
+    def test_reduced_motion_still_disables_the_new_animations(self):
+        self.assertIn('.atlas-lower.hud-switching::before', self.HTML)
+        self.assertIn('animation:none!important', self.HTML)
+
+    def test_slide_one_flowing_title_was_not_reintroduced(self):
+        """The user explicitly rejected the flowing hero title; this patch is HUD-only."""
+        self.assertNotIn('flowing-title', self.HTML)
+        self.assertNotIn('title-flow', self.HTML)
