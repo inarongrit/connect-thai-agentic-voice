@@ -115,6 +115,60 @@ class AssistanceProgramTests(unittest.TestCase):
         self.assertFalse(self.module._needs_model("bank", state, "ขอลดค่างวด"))
 
 
+class WholeConversationTests(unittest.TestCase):
+    """Drive real turns through _apply_signal, not just the stage handler.
+
+    The first version of this feature was written one level too deep: it only changed a
+    sub-branch that needed a second matching utterance, so the first reply to hardship
+    was still the old payment menu. Handler-level tests all passed. These do not.
+    """
+
+    def setUp(self):
+        self.module = _load("true")
+
+    def _state(self):
+        return {"scenario": "bank", "identityConfirmed": "true", "stage": "payment_type",
+                "customerName": "ณรงค์ฤทธิ์"}
+
+    def test_the_first_reply_to_hardship_offers_relief_not_payment_options(self):
+        state = self._state()
+        result = self.module._apply_signal(state, "hardship", "bank")
+        self.assertIsNotNone(result, "hardship must be answered, not passed through")
+        message = result["message"]
+        for option in self.module.BANK_ASSISTANCE_CHOICES:
+            self.assertIn(option, message)
+        self.assertNotIn("ขอเลื่อนการชำระออกไป", message)
+        self.assertEqual(state["stage"], "assistance_options")
+
+    def test_naming_a_relief_option_is_understood_rather_than_re_prompted(self):
+        """"ขอลดค่างวด" also matches the hardship pattern, so it used to loop."""
+        state = self._state()
+        self.module._apply_signal(state, "hardship", "bank")
+        # Second turn: the caller answers. Hardship matches again, so the signal layer
+        # must stand aside and let the stage handler read the answer.
+        passthrough = self.module._apply_signal(state, "hardship", "bank")
+        self.assertIsNone(passthrough, "signal layer must not re-ask the menu")
+        result = self.module._handle_assistance_options(state, "ขอลดค่างวดชั่วคราวค่ะ")
+        self.assertTrue(result["done"])
+        self.assertEqual(state["assistancePlan"], "reduce_installment")
+        self.assertEqual(state["outcomeType"], "assistance_plan_requested")
+
+    def test_partial_payment_is_still_reachable_from_the_relief_offer(self):
+        state = self._state()
+        offer = self.module._apply_signal(state, "hardship", "bank")
+        self.assertIn("ชำระบางส่วน", offer["message"])
+        result = self.module._handle_assistance_options(state, "จ่ายได้บางส่วนค่ะ")
+        self.assertEqual(state["paymentType"], "partial")
+        self.assertFalse(result["done"])
+
+    def test_the_flag_off_path_keeps_the_original_menu(self):
+        module = _load("false")
+        state = {"scenario": "bank", "identityConfirmed": "true", "stage": "payment_type"}
+        result = module._apply_signal(state, "hardship", "bank")
+        self.assertIn("ขอเลื่อนการชำระออกไป", result["message"])
+        self.assertEqual(state["stage"], "hardship_options")
+
+
 class LicensedScenariosStillTransferTests(unittest.TestCase):
     """Insurance and broker hardship transfers are a regulatory boundary, not laziness."""
 

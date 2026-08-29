@@ -1134,8 +1134,22 @@ def _apply_signal(state, signal, scenario):
     if scenario == "bank":
         if not state.get("identityConfirmed"):
             return None
-        if state.get("stage") == "hardship_options":
+        # Already inside a hardship branch: fall through so the stage handler reads the
+        # answer. Without assistance_options here, a caller naming a relief option --
+        # "ขอลดค่างวด" also matches the hardship pattern -- re-entered this function and
+        # heard the menu again instead of being understood.
+        if state.get("stage") in {"hardship_options", "assistance_options"}:
             return None
+        if ASSISTANCE_PROGRAM:
+            # The first reply to hardship is the one that matters. Offering only ways to
+            # pay here is what made the agent feel like it was still chasing money.
+            state["stage"] = "assistance_options"
+            state["outcomeDetail"] = "signal=hardship; assistance options offered"
+            return {"done": False,
+                    "message": "เข้าใจสถานการณ์ค่ะ ขอบคุณที่แจ้งให้ทราบ "
+                               "ธนาคารมีแนวทางช่วยเหลือด้านการชำระอยู่ค่ะ "
+                               f"สนใจแบบ{_spoken_options(BANK_ASSISTANCE_CHOICES)}คะ "
+                               "หากสะดวกชำระบางส่วนก่อนก็แจ้งได้ค่ะ"}
         state["stage"] = "hardship_options"
         return {"done": False,
                 "message": "รับทราบค่ะ ขอบคุณที่แจ้งให้ทราบ "
