@@ -2,6 +2,13 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: Feature-flagged Thai GPT-5.6 Luna/Terra dialogue experiment for Amazon Connect
 
 Parameters:
+  AssistanceProgram:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      When true, a bank caller who cannot pay is offered named relief options by the
+      agent instead of being transferred straight to a person.
   ConnectInstanceArn:
     Type: String
     AllowedPattern: ^arn:aws:connect:[a-z0-9-]+:\d{12}:instance/[a-f0-9-]+$
@@ -106,6 +113,7 @@ Resources:
           # Measured boundary: on-topic questions scored 0.518 upward, off-topic ones
           # 0.446 downward, so this sits between them. See the note in the Lambda.
           KB_SCORE_FLOOR: '0.48'
+          ASSISTANCE_PROGRAM: !Ref AssistanceProgram
           PROFILE_DOMAIN: !Ref CustomerProfilesDomain
       Code:
         ZipFile: |
@@ -126,6 +134,11 @@ Resources:
           MAX_TURNS = int(os.environ.get("MAX_TURNS", "10"))
           POLICY_V2 = os.environ.get("NEGOTIATION_POLICY_V2", "true").lower() == "true"
           MAX_REPEATS = int(os.environ.get("MAX_REPEATS", "1"))
+          # Collections feedback: a caller who genuinely cannot pay was transferred straight to a
+          # person, so the agent kept the easy calls and handed over every hard one. With this on,
+          # it presents the named assistance options itself and only transfers when a person is
+          # actually needed. Default off so it can be enabled deliberately.
+          ASSISTANCE_PROGRAM = os.environ.get("ASSISTANCE_PROGRAM", "false").lower() == "true"
 
           _THAI_DIGITS = ("ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า")
 
@@ -1133,6 +1146,21 @@ Resources:
 
           BANK_PAYMENT_CHOICES = ("ชำระเต็มจำนวน", "ชำระบางส่วน", "แบ่งชำระ")
           BANK_HARDSHIP_CHOICES = ("ชำระบางส่วนก่อน", "ขอเลื่อนการชำระออกไป")
+          BANK_ASSISTANCE_CHOICES = ("ลดค่างวดชั่วคราว", "พักชำระเงินต้น", "ขยายระยะเวลาผ่อนชำระ")
+          BANK_ASSISTANCE_MATCHERS = (
+              ("reduce_installment", re.compile(r"ลดค่างวด|ลดงวด|ค่างวดน้อย|จ่ายน้อยลง|ลดยอดผ่อน|ลดการผ่อน")),
+              ("principal_holiday", re.compile(r"พักชำระเงินต้น|พักเงินต้น|เงินต้น|พักชำระ|พักหนี้|พักก่อน")),
+              ("extend_term", re.compile(r"ขยายระยะเวลา|ขยายเวลา|ยืดเวลา|ผ่อนนานขึ้น|เพิ่มงวด|ยืดงวด")),
+          )
+          ASSISTANCE_PLAN_TH = {
+              "reduce_installment": "ลดค่างวดชั่วคราว",
+              "principal_holiday": "พักชำระเงินต้น",
+              "extend_term": "ขยายระยะเวลาผ่อนชำระ",
+          }
+
+
+          def _assistance_plan(text):
+              return _match_first(BANK_ASSISTANCE_MATCHERS, text)
           INSURANCE_NEED_CHOICES = ("สุขภาพ", "ชีวิต", "การออม")
           BROKER_ACTION_CHOICES = ("สนใจรับรายละเอียดสัมมนา", "นัดคุยกับผู้แนะนำการลงทุน")
           BROKER_TOPIC_CHOICES = ("พื้นฐานการลงทุน", "การกระจายพอร์ต", "การวางแผนเกษียณ", "ความรู้เรื่องตลาด")
@@ -1248,6 +1276,14 @@ Resources:
               """Bank hardship branch: capture a partial offer or refer for assistance."""
               compact = _despace(_compact(transcript, 200))
               if DEFER_RE.search(compact) and not _looks_amount(compact):
+                  if ASSISTANCE_PROGRAM:
+                      # The caller cannot pay. That is the moment to describe the relief that
+                      # exists, not to hand the conversation to someone else.
+                      state["stage"] = "assistance_options"
+                      state["outcomeDetail"] = "signal=hardship; assistance options offered"
+                      return {"done": False,
+                              "message": "เข้าใจสถานการณ์ค่ะ ธนาคารมีแนวทางช่วยเหลือด้านการชำระอยู่ค่ะ "
+                                         f"สนใจแบบ{_spoken_options(BANK_ASSISTANCE_CHOICES)}คะ"}
                   state["outcomeDetail"] = "signal=hardship; payment assistance review requested"
                   return _complete(state, "payment_assistance_referral",
                                    "รับทราบค่ะ จะส่งเรื่องให้ทีมช่วยเหลือด้านการชำระตรวจสอบแนวทางผ่อนผันค่ะ "
@@ -1260,6 +1296,45 @@ Resources:
                   return {"done": False, "message": _ask_for("paymentAmount")}
               return {"done": False,
                       "message": f"สะดวก{_spoken_options(BANK_HARDSHIP_CHOICES)}คะ"}
+
+
+          def _handle_assistance_options(state, transcript):
+              """Capture which assistance option the caller wants, without approving it.
+
+              The agent may describe the programme and record a request; only a person can
+              approve one. The wording therefore commits to a follow-up, never to an outcome.
+              """
+              compact = _despace(_compact(transcript, 200))
+              # Never trap a caller in self-service. Asking for a person always works.
+              if _classify_wants_human(transcript):
+                  return _complete(state, "human_transfer", "รับทราบค่ะ " + HANDOFF_HOLD_TH)
+              plan = _assistance_plan(transcript)
+              if plan:
+                  state["assistancePlan"] = plan
+                  label = ASSISTANCE_PLAN_TH[plan]
+                  state["outcomeDetail"] = f"signal=hardship; assistance requested: {plan}"
+                  return _complete(state, "assistance_plan_requested",
+                                   f"รับทราบค่ะ จะบันทึกคำขอ{label}ไว้ให้ค่ะ "
+                                   "ทีมช่วยเหลือด้านการชำระจะติดต่อกลับเพื่อยืนยันเงื่อนไขและเอกสาร "
+                                   "โดยผลการพิจารณาขึ้นอยู่กับการตรวจสอบของธนาคารค่ะ")
+              # A caller who can pay something after hearing the options is back on the
+              # ordinary partial-payment path.
+              if PARTIAL_RE.search(compact) or _looks_amount(compact):
+                  state["paymentType"] = "partial"
+                  if _looks_amount(compact):
+                      return {"done": False, "message": _set_pending(state, "paymentAmount", compact)}
+                  state["stage"] = "payment_amount"
+                  return {"done": False, "message": _ask_for("paymentAmount")}
+              # Repeating the menu forever is its own kind of unhelpful, so the second miss
+              # degrades to the human referral this branch used to reach immediately.
+              if state.get("assistanceAsked"):
+                  state["outcomeDetail"] = "signal=hardship; assistance option unclear"
+                  return _complete(state, "payment_assistance_referral",
+                                   "ขออภัยค่ะ เพื่อให้ได้แนวทางที่เหมาะที่สุด "
+                                   + HANDOFF_HOLD_TH)
+              state["assistanceAsked"] = "true"
+              return {"done": False,
+                      "message": f"สนใจแบบ{_spoken_options(BANK_ASSISTANCE_CHOICES)}คะ"}
 
 
           def _handle_pending(state, transcript):
@@ -1322,6 +1397,8 @@ Resources:
                   return {"done": False, "message": "ขอเรียนยืนยันว่ากำลังเรียนสายเจ้าของชื่อที่แจ้งไว้หรือไม่คะ"}
               if POLICY_V2 and stage == "hardship_options":
                   return _handle_hardship_options(state, transcript)
+              if POLICY_V2 and stage == "assistance_options":
+                  return _handle_assistance_options(state, transcript)
               common = _common_intent(state, classified)
               if common:
                   return common
@@ -1498,7 +1575,7 @@ Resources:
 
           def _needs_model(scenario, state, transcript):
               stage = state.get("stage", "")
-              if POLICY_V2 and stage == "hardship_options":
+              if POLICY_V2 and stage in {"hardship_options", "assistance_options"}:
                   return False
               if scenario == "bank":
                   if stage == "verify_identity":
