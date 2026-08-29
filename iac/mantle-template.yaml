@@ -124,6 +124,7 @@ Resources:
           import os
           import re
           import time
+          from datetime import datetime, timedelta, timezone
 
           import boto3
 
@@ -624,6 +625,12 @@ Resources:
                   state = {}
               if state.get("scenario") != scenario or not isinstance(state.get("turn"), int):
                   state = _initial_state(scenario)
+              # The flow sends the outstanding balance as an attribute, but nothing carried it into
+              # the dialogue state, so the amount check had no figure to compare against and every
+              # amount passed. Refreshed each turn because the flow is the source of truth.
+              balance = _compact(attributes.get("amount"), 40)
+              if balance:
+                  state["amount"] = balance
               return state
 
 
@@ -674,7 +681,13 @@ Resources:
 
           def _looks_datetime(text):
               compact = _despace(_compact(text, 120))
-              return len(compact) >= 2 and bool(DATE_WORDS.search(compact) or re.search(r"[0-9๐-๙]{1,2}([:/.-][0-9๐-๙]{1,2})?", compact))
+              return len(compact) >= 2 and bool(
+                  DATE_WORDS.search(compact)
+                  # Past expressions are date-shaped answers that happen to be unusable. They must
+                  # reach the validator to be corrected, rather than falling through to the model
+                  # and ending the call in a transfer.
+                  or PAST_DATE_RE.search(compact)
+                  or re.search(r"[0-9๐-๙]{1,2}([:/.-][0-9๐-๙]{1,2})?", compact))
 
 
           def _looks_amount(text):
@@ -925,6 +938,18 @@ Resources:
               return spoken
 
 
+          def _has_date_expression(text):
+              """True only when a documented date pattern matches.
+
+              _looks_datetime is deliberately loose -- any digit passes -- which is fine for
+              deciding that a caller attempted an answer. It is not enough to accept a correction:
+              "จะจ่าย 1 บาท" contains a digit and was captured as a date.
+              """
+              spoken = _strip_politeness(text)
+              return any(re.search(pattern, spoken) for pattern in DATE_PATTERNS) or bool(
+                  PAST_DATE_RE.search(_despace(spoken)))
+
+
           def _extract_when(text):
               """Return only the date/time expression, not the customer's whole sentence."""
               spoken = _strip_politeness(text)
@@ -1009,11 +1034,107 @@ Resources:
               return _THAI_DAY_UNITS.get(word)
 
 
+          _THAI_SCALES = (("ล้าน", 1000000), ("แสน", 100000), ("หมื่น", 10000),
+                          ("พัน", 1000), ("ร้อย", 100), ("สิบ", 10))
+          _THAI_AMOUNT_UNITS = dict(_THAI_DAY_UNITS, **{"ยี่": 2})
+          # A promise to pay one baht against a fifteen-thousand baht balance is not a payment
+          # plan. Like the date gate, the amount gate only checks shape, so any number passed.
+          TOKEN_AMOUNT_FRACTION = 0.01
+
+
+          def _thai_amount_to_int(text):
+              """Parse an amount written in digits or spoken in Thai. None if unparsable."""
+              cleaned = _despace(_compact(text, 80)).translate(_ARABIC_DIGITS).replace(",", "")
+              digits = re.search(r"[0-9]+(?:\.[0-9]+)?", cleaned)
+              if digits:
+                  return int(float(digits.group()))
+              total = current = 0
+              index = 0
+              matched = False
+              while index < len(cleaned):
+                  for word, scale in _THAI_SCALES:
+                      if cleaned.startswith(word, index):
+                          total += (current or 1) * scale
+                          current = 0
+                          index += len(word)
+                          matched = True
+                          break
+                  else:
+                      for word, value in _THAI_AMOUNT_UNITS.items():
+                          if cleaned.startswith(word, index):
+                              current = value
+                              index += len(word)
+                              matched = True
+                              break
+                      else:
+                          index += 1
+              if not matched:
+                  return None
+              return total + current
+
+
+          def _implausible_amount(state, raw):
+              """Return a spoken correction when the offered amount makes no sense."""
+              value = _thai_amount_to_int(raw)
+              if value is None:
+                  return None
+              if value <= 0:
+                  return ("ขออภัยค่ะ จำนวนเงินต้องมากกว่าศูนย์ค่ะ "
+                          "กรุณาแจ้งจำนวนที่สะดวกชำระอีกครั้งค่ะ")
+              balance = _thai_amount_to_int(state.get("amount") or "")
+              if not balance or balance <= 0:
+                  return None
+              if value > balance:
+                  # Not a rejection of the customer's willingness -- just the wrong bucket.
+                  return (f"ยอดค้างชำระทั้งหมดคือ {_thai_baht_words(balance)}ค่ะ "
+                          "จำนวนที่แจ้งมากกว่ายอดค้างชำระ "
+                          "หากต้องการชำระทั้งหมดแจ้งว่าชำระเต็มจำนวนได้ค่ะ "
+                          "หรือแจ้งจำนวนที่ไม่เกินยอดค้างชำระอีกครั้งค่ะ")
+              floor = max(1, round(balance * TOKEN_AMOUNT_FRACTION))
+              if value < floor:
+                  return (f"ขออภัยค่ะ จำนวนขั้นต่ำที่รับได้คือ {_thai_baht_words(floor)}ค่ะ "
+                          "กรุณาแจ้งจำนวนที่สะดวกชำระอีกครั้งค่ะ")
+              return None
+
+
           def _month_limit(text):
               for name, days in _THAI_MONTH_DAYS:
                   if name in text:
                       return name, days
               return None, None
+
+
+          PAST_DATE_RE = re.compile(
+              r"เมื่อวานซืน|เมื่อวาน|วานนี้|สัปดาห์ที่แล้ว|อาทิตย์ที่แล้ว|เดือนที่แล้ว|ปีที่แล้ว|"
+              r"ปีก่อน|เดือนก่อน|ที่ผ่านมา|เมื่อปี"
+          )
+          # A promise to pay is only useful within a horizon a collections team can act on.
+          MAX_PROMISE_YEARS_AHEAD = 1
+
+
+          def _bangkok_today():
+              return datetime.now(timezone(timedelta(hours=7))).date()
+
+
+          def _explicit_year(text):
+              """Return a Gregorian year when the caller named one, otherwise None.
+
+              A four-digit number is only a year in date context -- spelled with ปี, or sitting
+              beside a month. Without that guard "2000 บาท" was read as the year 2000 and a
+              perfectly good payment amount was rejected as being in the past.
+              """
+              if "บาท" in text:
+                  return None
+              explicit = re.search(r"ปี\s*(?<![0-9])((?:25|26|19|20)[0-9]{2})(?![0-9])", text)
+              if not explicit:
+                  if _month_limit(text)[0] is None:
+                      return None
+                  explicit = re.search(r"(?<![0-9])((?:25|26|19|20)[0-9]{2})(?![0-9])", text)
+              if not explicit:
+                  return None
+              year = int(explicit.group(1))
+              # Thai callers usually speak the Buddhist era; 2569 means 2026.
+              return year - 543 if year >= 2400 else year
 
 
           def _impossible_date(raw):
@@ -1050,13 +1171,42 @@ Resources:
               return None
 
 
+          def _unusable_date(raw):
+              """Reject dates that exist but cannot serve as a promise to pay.
+
+              A bare day and month is deliberately not judged: "วันที่ 1 มกราคม" said in August
+              means next January, so treating it as past would reject a perfectly good promise.
+              Only an explicit past marker or a named year is checked.
+              """
+              text = _despace(_compact(raw, 160)).translate(_ARABIC_DIGITS)
+              if PAST_DATE_RE.search(text):
+                  return ("ขออภัยค่ะ วันที่ที่แจ้งเป็นวันที่ผ่านมาแล้วค่ะ "
+                          "กรุณาระบุวันที่ในอนาคตที่สะดวกชำระค่ะ")
+              year = _explicit_year(text)
+              if year is None:
+                  return None
+              today = _bangkok_today()
+              if year < today.year:
+                  return ("ขออภัยค่ะ ปีที่แจ้งผ่านมาแล้วค่ะ "
+                          "กรุณาระบุวันที่ในอนาคตที่สะดวกชำระค่ะ")
+              if year > today.year + MAX_PROMISE_YEARS_AHEAD:
+                  return ("ขออภัยค่ะ วันที่ที่แจ้งไกลเกินกว่าที่จะนัดชำระได้ค่ะ "
+                          "กรุณาระบุวันที่ภายในหนึ่งปีค่ะ")
+              return None
+
+
           def _set_pending(state, field, raw):
               extractor = _extract_amount if field == "paymentAmount" else _extract_when
-              if field != "paymentAmount":
+              if field == "paymentAmount":
+                  correction = _implausible_amount(state, raw)
+                  if correction:
+                      state.pop("pending", None)
+                      return correction
+              else:
                   # Every captured date reaches its read-back through here, so this is the one
                   # place that has to reject an impossible one. Pending is left unset so the
                   # stage asks again instead of confirming something that cannot happen.
-                  correction = _impossible_date(raw)
+                  correction = _impossible_date(raw) or _unusable_date(raw)
                   if correction:
                       state.pop("pending", None)
                       return correction
@@ -1467,7 +1617,7 @@ Resources:
                       candidate = _compact(_extract_amount(transcript), 120)
                       if candidate and candidate != pending["raw"]:
                           return {"done": False, "message": _set_pending(state, field, transcript)}
-              elif _looks_datetime(transcript):
+              elif _has_date_expression(transcript):
                   candidate = _compact(_extract_when(transcript), 120)
                   if candidate and candidate != pending["raw"]:
                       return {"done": False, "message": _set_pending(state, field, transcript)}
