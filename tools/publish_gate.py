@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 IGNORED_DIRS = {"node_modules", "backups", ".git", "__pycache__", ".aidlc",
                 ".playwright-mcp", ".vscode", ".idea"}
 # Binary or vendored assets whose content is not authored here.
-SKIP_FILES = {"webrtc.bundle.js", "package-lock.json"}
+SKIP_FILES = {"webrtc.bundle.js", "touchpoint.bundle.js", "package-lock.json"}
 TEXT_SUFFIXES = {".py", ".js", ".json", ".yaml", ".yml", ".md", ".html", ".sh",
                  ".txt", ".toml", ".cfg", ".ini", ""}
 

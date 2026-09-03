@@ -194,3 +194,16 @@ class ExtensionContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeneratedTouchpointBundleTests(unittest.TestCase):
+    def test_generated_touchpoint_bundle_is_skipped_like_webrtc(self):
+        """The minified MIT-licensed vendor bundle contains harmless constants that look
+        like phone numbers, SHA-256 hashes, and Amazon-internal name prefixes. Scan the
+        authored touchpoint-client.js and livesync.html instead; skipping an arbitrary
+        source file would create a place for a real secret to hide.
+        """
+        self.assertIn("touchpoint.bundle.js", GATE.SKIP_FILES)
+        self.assertFalse(GATE.scannable(ROOT / "web" / "touchpoint.bundle.js"))
+        self.assertTrue(GATE.scannable(ROOT / "web" / "touchpoint-client.js"))
+        self.assertTrue(GATE.scannable(ROOT / "web" / "livesync.html"))

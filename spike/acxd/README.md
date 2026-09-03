@@ -218,6 +218,50 @@ the console canvas (attach the slot, wire Match and No-match), save, then read i
 with `GetFlow` and replicate the pattern for every deterministic node. This converts
 open-ended guessing into a one-time template diff.
 
+## Live Sync multimodal pivot (verified 2026-09-03)
+
+We stopped treating ACXD as a replacement dialogue engine and built only the capability
+the existing Lambda path does not provide: synchronized on-screen Thai relief options.
+
+**Built and deployed:**
+
+- Dedicated app `fsi-relief-live-sync-th`, isolated from the production dialogue engine.
+- Flow `reliefLiveSyncFlow`: `start → multimodal → end/escalate`, with custom action
+  `select_relief_option`. The action schema allows exactly the three approved option IDs;
+  the agent prompt forbids approval claims and requires the bank-review disclosure.
+- Development application deployment reached **`deployed`**.
+- Safe frontend preview at `https://<DEMO_DOMAIN>/livesync.html`, using pinned
+  `@amazon-connect-touchpoint/web@1.0.0`. Local preview works without credentials; optional
+  Live Sync credentials are runtime password fields, never embedded or persisted. External
+  mode opens no contact of its own and cannot replace the production dialogue path.
+
+**Managed runtime language risk:** creating the Live Sync app with `th-TH` silently
+persisted the application as `en-US`. Aligning flow/build/deployment to en-US allowed the
+deployment to succeed while retaining Thai instructions, labels, and action payloads. A
+real contact test is still required to prove Thai conversational handling. General ACXD
+resources support `th-TH`; this limitation is specific to the Live Sync runtime observed.
+
+**Scripted artifact:** `fsi-relief-options-th` and its Thai page-load step build
+successfully, but script deployment moves `scheduled → failed` with no exposed reason —
+even after adding en-US and after using en-US as the main runtime. It is not on the
+critical path because Touchpoint custom actions can be declared dynamically by the page.
+
+**Exact blockers to a real round trip:**
+
+1. SDK v0.1.0 does not expose the Touchpoint `deploymentKey` or frontend `apiKey`.
+   Documentation says to copy them from the deployed application's **Access** settings.
+2. A separate Amazon Connect flow must invoke the app through the Agentic CX block. The
+   production flow must stay unchanged. Re-probing the block with real workspace,
+   application, and deployment IDs still yields only generic `Invalid Action property
+   value`; the block asks for an application **alias**, which the deployment API does not
+   expose. Create the block once in the flow designer UI (or copy its JSON after saving).
+3. Touchpoint `external` mode then needs the active contact ID. Once those three runtime
+   values are pasted into the preview page, the custom-action handler can prove the
+   voice/screen selection round trip.
+
+The portable contract is `live_sync_relief.json`; no account IDs, resource UUIDs, or keys
+are committed. Local resource IDs and all credentials remain in git-ignored files.
+
 ## Artifacts
 
 ### `collections_rules.json`

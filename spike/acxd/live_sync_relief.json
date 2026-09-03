@@ -1,0 +1,68 @@
+{
+  "$comment": "Portable specification for the Live Sync relief-options spike. Account-specific IDs and all keys stay in git-ignored local files.",
+  "name": "fsi-relief-live-sync-th",
+  "purpose": "Show three approved Thai payment-relief options while the customer remains in the same voice or chat conversation, and return a tap or spoken selection as a typed option ID.",
+  "productionDialogueReplacement": false,
+  "runtime": {
+    "requestedLanguage": "th-TH",
+    "managedLanguagePersistedByService": "en-US",
+    "thaiUxRetained": true,
+    "environment": "development",
+    "deploymentStatus": "deployed",
+    "risk": "Live Sync silently persisted the application as en-US. Thai instructions, labels, and action payloads are present, but Thai conversational behavior still requires an end-to-end contact test."
+  },
+  "flow": {
+    "flowId": "reliefLiveSyncFlow",
+    "nodeTypes": ["start", "multimodal", "end", "escalate"],
+    "scope": "relief_options",
+    "bidirectional": true,
+    "customAction": {
+      "name": "select_relief_option",
+      "type": "custom",
+      "description": "Select exactly one approved Thai payment-relief option shown on the page.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "option": {
+            "type": "string",
+            "enum": ["reduce_installment", "principal_holiday", "extend_term"]
+          }
+        },
+        "required": ["option"],
+        "additionalProperties": false
+      }
+    },
+    "exitConditions": ["task_complete", "human_requested", "unable_to_help"],
+    "forbiddenClaims": ["อนุมัติแล้ว", "อนุมัติเรียบร้อย", "ได้รับการอนุมัติ"],
+    "requiredDisclosure": "ผลการพิจารณาขึ้นอยู่กับการตรวจสอบของธนาคาร"
+  },
+  "options": [
+    {"id": "reduce_installment", "labelTh": "ลดค่างวดชั่วคราว"},
+    {"id": "principal_holiday", "labelTh": "พักชำระเงินต้น"},
+    {"id": "extend_term", "labelTh": "ขยายระยะเวลาผ่อนชำระ"}
+  ],
+  "frontend": {
+    "package": "@amazon-connect-touchpoint/web",
+    "version": "1.0.0",
+    "mode": "external",
+    "page": "web/livesync.html",
+    "credentialsEmbedded": false,
+    "credentialsPersistedInBrowser": false,
+    "connectionRequirements": ["deploymentKey", "apiKey", "contactId"],
+    "tapRoundTrip": "A tap calls conversationHandler.sendText with the Thai option label when connected; the Live Sync custom action returns a schema-validated option ID to the page handler."
+  },
+  "script": {
+    "name": "fsi-relief-options-th",
+    "mainLanguage": "th-TH",
+    "languagesInLatestBuild": ["th-TH", "en-US"],
+    "buildStatus": "BUILT",
+    "deploymentStatus": "failed",
+    "step": {
+      "name": "show-relief-options",
+      "trigger": {"event": "pageLoad", "once": true},
+      "action": "continue"
+    },
+    "note": "The scripted page-load artifact builds but deployment fails asynchronously without an exposed reason. It is not on the critical path because Touchpoint custom actions can be declared dynamically from the frontend."
+  },
+  "remainingBlocker": "SDK v0.1.0 does not return Touchpoint deploymentKey or frontend apiKey. Documentation says to copy them from the deployed application's Access settings. The page accepts them at runtime only and never stores them."
+}

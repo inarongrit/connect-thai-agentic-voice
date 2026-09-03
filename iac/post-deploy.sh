@@ -107,6 +107,8 @@ aws s3 cp "$WEB_DIR/call.html" "s3://$BUCKET/call.html" --content-type "text/htm
 aws s3 cp "$WEB_DIR/feedback.js" "s3://$BUCKET/feedback.js" --content-type "application/javascript; charset=utf-8" --cache-control "public,max-age=86400" --region "$REGION"
 aws s3 cp "$WEB_DIR/cost.js" "s3://$BUCKET/cost.js" --content-type "application/javascript; charset=utf-8" --cache-control "public,max-age=86400" --region "$REGION"
 aws s3 cp "$WEB_DIR/webrtc.bundle.js" "s3://$BUCKET/webrtc.bundle.js" --content-type "application/javascript; charset=utf-8" --cache-control "public,max-age=31536000,immutable" --region "$REGION"
+aws s3 cp "$WEB_DIR/livesync.html" "s3://$BUCKET/livesync.html" --content-type "text/html; charset=utf-8" --cache-control "no-cache" --region "$REGION"
+aws s3 cp "$WEB_DIR/touchpoint.bundle.js" "s3://$BUCKET/touchpoint.bundle.js" --content-type "application/javascript; charset=utf-8" --cache-control "public,max-age=31536000,immutable" --region "$REGION"
 aws s3 cp /tmp/fsi-qr.html "s3://$BUCKET/qr.html" --content-type "text/html; charset=utf-8" --region "$REGION"
 
 echo ""

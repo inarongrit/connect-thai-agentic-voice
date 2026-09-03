@@ -3,12 +3,15 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "build:webrtc": "esbuild webrtc-client.js --bundle --minify --platform=browser --main-fields=browser,module,main --conditions=browser --define:global=globalThis --format=iife --global-name=FsiWebRTC --target=es2020 --outfile=webrtc.bundle.js"
+    "build:webrtc": "esbuild webrtc-client.js --bundle --minify --platform=browser --main-fields=browser,module,main --conditions=browser --define:global=globalThis --format=iife --global-name=FsiWebRTC --target=es2020 --outfile=webrtc.bundle.js",
+    "build:touchpoint": "esbuild touchpoint-client.js --bundle --minify --platform=browser --main-fields=module,main,browser --conditions=browser --define:global=globalThis --format=iife --global-name=FsiLiveSync --target=es2020 --outfile=touchpoint.bundle.js"
   },
   "dependencies": {
+    "@amazon-connect-touchpoint/web": "1.0.0",
     "amazon-chime-sdk-js": "3.32.0"
   },
   "devDependencies": {
+    "amazon-connect-acxd-sdk": "0.1.0",
     "esbuild": "0.28.2"
   }
 }
