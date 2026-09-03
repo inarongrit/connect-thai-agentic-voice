@@ -23,6 +23,32 @@ must either:
 2. Ask an Account Admin to generate an **ACXD SDK API key**, after which the application
    can be created as code and kept in this repository.
 
+### Getting an ACXD SDK API key
+
+Per the [SDK getting-started guide](https://docs.aws.amazon.com/connect/latest/devguide/acxd-getting-started.html):
+
+**Prerequisites** — an Agentic CX Designer workspace, and Administrator access to it
+(Admin Hub). The workspace must exist first, so the console step cannot be skipped
+entirely.
+
+1. **Create a programmatic user.** Admin Hub → Programmatic Users → *Create Programmatic
+   User*. Only account administrators can do this. Assign permissions through
+   `roleConfig`: either `accountRole: administrator` for every workspace, or
+   `workspaceRoles` scoped per workspace using a pre-defined role (administrator,
+   developer, content manager, read-only) or a custom role.
+2. **Generate the key.** Select the user → *Generate API Key*. It is shown **once**;
+   copy it immediately. Format `acxd_live_<prefix>.<secret>`. Maximum two keys per user.
+3. **Install the SDK.** `npm install amazon-connect-acxd-sdk` — the SDK is
+   JavaScript/TypeScript, not Python.
+
+The key carries no permissions of its own; they resolve at request time from the
+programmatic user's role, and role changes take effect immediately. So prefer a
+workspace-scoped `developer` role over `accountRole: administrator` for this spike.
+
+**Never commit the key.** It is a long-lived static credential, and `tools/publish_gate.py`
+now blocks the `acxd_live_`/`acxd_test_` format so it cannot reach the repository. Keep it
+in the environment or Secrets Manager.
+
 Option 2 is strongly preferred. The whole value of this project is that behaviour is
 reproducible and test-covered; a console-only application would be clickops and would
 lose that property.

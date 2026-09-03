@@ -26,6 +26,8 @@ SPEC.loader.exec_module(GATE)
 FAKE_ACCESS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
 FAKE_PRIVATE_KEY = "-----BEGIN RSA PRIVATE" + " KEY-----"
 FAKE_GH_TOKEN = "ghp" + "_" + "a" * 30
+# acxd_live_<prefix>.<secret>, assembled so this file holds no usable literal.
+FAKE_ACXD_KEY = "acxd" + "_live_" + "ab12cd34" + "." + "z" * 40
 LIVE_ACCOUNT_ID = "9017" + "17345697"
 LIVE_PHONE = "+1833" + "8519388"
 SAMPLE_DISTRIBUTION_HOST = "e2abc3def4ghi" + "." + "cloudfront.net"
@@ -46,6 +48,26 @@ class DetectionTests(unittest.TestCase):
     def test_private_key_is_detected(self):
         findings = self.check("id_rsa.txt", FAKE_PRIVATE_KEY + "\nabc\n")
         self.assertTrue(any("private key" in f for f in findings), findings)
+
+    def test_acxd_sdk_api_key_is_detected(self):
+        """The ACXD SDK key is a long-lived credential shown only once at creation.
+
+        It is not hex, so the high-entropy rule does not cover it. Committing one
+        would hand over every workspace the programmatic user can reach.
+        """
+        findings = self.check("sdk_client.js", f'apiKey: "{FAKE_ACXD_KEY}"\n')
+        self.assertTrue(any("Agentic CX Designer SDK API key" in f for f in findings),
+                        f"ACXD key not detected: {findings}")
+
+    def test_acxd_pattern_does_not_flag_ordinary_prose(self):
+        """A false positive here would block publishing for no reason."""
+        for benign in ("acxd_live_", "the acxd sdk", "acxd-getting-started.html",
+                       "spike/acxd/collections_rules.json"):
+            with self.subTest(text=benign):
+                findings = self.check("notes.md", benign + "\n")
+                self.assertFalse(
+                    any("Agentic CX Designer SDK API key" in f for f in findings),
+                    f"{benign} wrongly flagged")
 
     def test_github_token_is_detected(self):
         findings = self.check("ci.yaml", f"token: {FAKE_GH_TOKEN}\n")

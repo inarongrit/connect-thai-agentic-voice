@@ -41,6 +41,11 @@ CREDENTIAL_PATTERNS = [
     ("GitHub personal access token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b")),
     ("GitHub fine-grained token", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
     ("Slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b")),
+    # Agentic CX Designer SDK keys are long-lived static credentials of the form
+    # acxd_live_<prefix>.<secret>, generated in Admin Hub and shown only once. They
+    # are not hex, so the entropy rule below would not reliably catch them.
+    ("Agentic CX Designer SDK API key",
+     re.compile(r"\bacxd_(?:live|test)_[A-Za-z0-9]{4,}\.[A-Za-z0-9_-]{12,}\b")),
     ("bearer token literal", re.compile(r"Authorization\s*:\s*['\"]?Bearer\s+[A-Za-z0-9._-]{20,}")),
     ("high-entropy hex secret (>=32 hex chars)", re.compile(r"\b[0-9a-f]{32,}\b")),
 ]
