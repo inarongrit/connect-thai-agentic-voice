@@ -53,6 +53,33 @@ Option 2 is strongly preferred. The whole value of this project is that behaviou
 reproducible and test-covered; a console-only application would be clickops and would
 lose that property.
 
+## Resolved coordinates (verified 2026-09-03)
+
+Authentication works. The 401s during setup were **not** a key problem — the ID first
+supplied (`c2cfd1bf-9760-434e-96cc-2730af6eb9ed`) is not a workspace ID, so every
+workspace-scoped call was rejected. An account-level `ListWorkspaces` call with the same
+key succeeded and returned the real coordinates:
+
+| Resource | ID | Notes |
+| --- | --- | --- |
+| Region | `us-west-2` | Same as the Connect instance. The SDK otherwise defaults to an unreachable region; set it explicitly. |
+| Workspace `acxd-demo` | `160600e3-bf04-40f0-9eca-9ebb63f7ba37` | Target workspace. |
+| Workspace `connect-cx-demo` | `f23dfecc-d8fc-443a-a769-196c0e0ddbc7` | Empty. |
+| Application `acxd-app` | `063cf30a-7252-4322-ae9f-ea2388633ec6` | In acxd-demo; was empty at first inspection. |
+
+Auth mechanics confirmed: the SDK sends the key as an `x-api-key` header to
+`api.acxd.connect.us-west-2.amazonaws.com`. The key lives only in `fsi-demo/.env`
+(git-ignored, never committed, blocked by the publish gate).
+
+**Write path proven.** A Thai constrained slot type `FsiPaymentMethod` was created in
+`acxd-demo` — `mainLanguageCode: th-TH`, values ชำระเต็มจำนวน / ชำระบางส่วน / แบ่งชำระ —
+confirming the service accepts th-TH resources with Thai Unicode content. It is
+reversible via `DeleteSlotTypeCommand`.
+
+Still needed before `--target acxd` can score: build the remaining slot types and the
+deterministic validation flow, create an application build, and deploy an alias. Driving
+a live conversation session against that alias is a separate integration step.
+
 ## Artifacts
 
 ### `collections_rules.json`
