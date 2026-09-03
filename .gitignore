@@ -33,3 +33,6 @@ credentials
 # CDK synthesis output: build artefacts containing resolved account ids
 cdk.out/
 .cdk.staging/
+
+# Local ACXD resource ids — account-specific, keep out of the public repo
+spike/acxd/local-ids.md

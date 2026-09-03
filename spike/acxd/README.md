@@ -1,5 +1,7 @@
 # Agentic CX Designer spike
 
+> Account-specific resource IDs are kept in the git-ignored `local-ids.md`, not here.
+
 Findings from evaluating [agentic CX designer](https://aws.amazon.com/about-aws/whats-new/2026/09/agentic-cx-designer/)
 (GA 2026-09-02) against this project's Thai bank-collections journey.
 
@@ -56,16 +58,16 @@ lose that property.
 ## Resolved coordinates (verified 2026-09-03)
 
 Authentication works. The 401s during setup were **not** a key problem — the ID first
-supplied (`c2cfd1bf-9760-434e-96cc-2730af6eb9ed`) is not a workspace ID, so every
+supplied (`<NON_WORKSPACE_ID>`) is not a workspace ID, so every
 workspace-scoped call was rejected. An account-level `ListWorkspaces` call with the same
 key succeeded and returned the real coordinates:
 
 | Resource | ID | Notes |
 | --- | --- | --- |
 | Region | `us-west-2` | Same as the Connect instance. The SDK otherwise defaults to an unreachable region; set it explicitly. |
-| Workspace `acxd-demo` | `160600e3-bf04-40f0-9eca-9ebb63f7ba37` | Target workspace. |
-| Workspace `connect-cx-demo` | `f23dfecc-d8fc-443a-a769-196c0e0ddbc7` | Empty. |
-| Application `acxd-app` | `063cf30a-7252-4322-ae9f-ea2388633ec6` | In acxd-demo; was empty at first inspection. |
+| Workspace `acxd-demo` | `<ACXD_WORKSPACE_ID>` | Target workspace. |
+| Workspace `connect-cx-demo` | `<DELETED_WORKSPACE_ID>` | Empty. |
+| Application `acxd-app` | `<ACXD_APP_ID>` | In acxd-demo; was empty at first inspection. |
 
 Auth mechanics confirmed: the SDK sends the key as an `x-api-key` header to
 `api.acxd.connect.us-west-2.amazonaws.com`. The key lives only in `fsi-demo/.env`
@@ -89,7 +91,7 @@ Created in `acxd-demo` for the collections spike:
 
 | Resource | ID / name | Notes |
 | --- | --- | --- |
-| Application | `d1d1177c-c5b0-469b-ad62-8f2b6cf06502` / `fsi-collections-th` | Dedicated app; `acxd-app` left untouched. `settings.languageCode = th-TH`. |
+| Application | `<FSI_APP_ID>` / `fsi-collections-th` | Dedicated app; `acxd-app` left untouched. `settings.languageCode = th-TH`. |
 | Slot type | `FsiPaymentMethod` (th-TH) | ชำระเต็มจำนวน / ชำระบางส่วน / แบ่งชำระ |
 | Slot type | `FsiAssistanceOption` (th-TH) | ลดค่างวดชั่วคราว / พักชำระเงินต้น / ขยายระยะเวลาผ่อนชำระ |
 | Flow | `collectionsFlow` (th-TH) | **start → choice → end**, live. The `choice` node captures the Thai `FsiPaymentMethod` slot with prompt สะดวกชำระแบบไหนคะ — a deterministic constrained pick, built entirely as code. |
@@ -146,7 +148,7 @@ needed no build. Done via the SDK:
 
 - `fsi-collections-th` now has both flows attached — `collectionsFlow` (welcome entry) and
   `dateValidationFlow` — with `settings.defaultFlows.welcome = collectionsFlow`.
-- Build `00cf4eff-c816-4c42-994c-c5cbaafaa225` reached status **`BUILT`**, so the designer
+- Build `<BUILD_ID>` reached status **`BUILT`**, so the designer
   test chat is unblocked.
 
 **Runtime fix (a build alone was not enough):** the test chat first failed with a generic
