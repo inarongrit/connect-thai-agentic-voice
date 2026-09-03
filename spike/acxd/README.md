@@ -80,6 +80,42 @@ Still needed before `--target acxd` can score: build the remaining slot types an
 deterministic validation flow, create an application build, and deploy an alias. Driving
 a live conversation session against that alias is a separate integration step.
 
+## Build progress (2026-09-03)
+
+Workspace `connect-cx-demo` was verified empty across eight resource types and deleted at
+the user's request; only `acxd-demo` (`160600e3-…`) remains.
+
+Created in `acxd-demo` for the collections spike:
+
+| Resource | ID / name | Notes |
+| --- | --- | --- |
+| Application | `d1d1177c-c5b0-469b-ad62-8f2b6cf06502` / `fsi-collections-th` | Dedicated app; `acxd-app` left untouched. `settings.languageCode = th-TH`. |
+| Slot type | `FsiPaymentMethod` (th-TH) | ชำระเต็มจำนวน / ชำระบางส่วน / แบ่งชำระ |
+| Slot type | `FsiAssistanceOption` (th-TH) | ลดค่างวดชั่วคราว / พักชำระเงินต้น / ขยายระยะเวลาผ่อนชำระ |
+| Flow | `collectionsFlow` (th-TH) | Seed flow (start → end); to be filled with the deterministic nodes. |
+
+Schema facts learned by probing the API (each verified):
+
+- `flowId` and `slotTypeId` are **camelCase/alphabetic identifiers**, not UUIDs. `nodeId`
+  values are UUID v4.
+- A transition is expressed by a node's `childNodes: [{ nodeId: <target> }]`.
+- `FlowNodeType` values: `basic, choice, continue, define, end, escalate, flag, keyword,
+  llmJudge, loop, mask, modify, multimodal, note, redirect, regex, route, routeToFlow,
+  split, start, transform, wait`. The **`regex`** node is the natural home for the
+  date/amount validators; **`choice`** for the constrained slot picks; **`escalate`** for
+  handoff.
+- Selectable models: Nova Micro, Nova Lite, Claude Haiku 4.5, Claude Sonnet 5.
+
+Remaining to run the 78-case comparison:
+
+1. Author the deterministic nodes into `collectionsFlow` (`choice` for payment method,
+   `regex` for date + amount validation, `escalate` for the human-request escape hatch),
+   discovering each node type's config fields the same way.
+2. Attach the flow to `fsi-collections-th`, create an application **build**, and deploy an
+   **alias**.
+3. Wire `--target acxd` in `compare_slot_capture.py` to drive a conversation session
+   against the deployed alias, then score the 78 Thai cases against the engine control.
+
 ## Artifacts
 
 ### `collections_rules.json`
