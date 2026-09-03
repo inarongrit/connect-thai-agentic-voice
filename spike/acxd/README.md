@@ -93,6 +93,7 @@ Created in `acxd-demo` for the collections spike:
 | Slot type | `FsiPaymentMethod` (th-TH) | ชำระเต็มจำนวน / ชำระบางส่วน / แบ่งชำระ |
 | Slot type | `FsiAssistanceOption` (th-TH) | ลดค่างวดชั่วคราว / พักชำระเงินต้น / ขยายระยะเวลาผ่อนชำระ |
 | Flow | `collectionsFlow` (th-TH) | **start → choice → end**, live. The `choice` node captures the Thai `FsiPaymentMethod` slot with prompt สะดวกชำระแบบไหนคะ — a deterministic constrained pick, built entirely as code. |
+| Flow | `dateValidationFlow` (th-TH) | **start → split → reject/ok**, live. A `split` node with a `matches_regex` condition on the `paymentDate` context variable rejects impossible dates and routes to a Thai re-prompt — deterministic validation, as code. |
 
 Schema facts learned by probing the API (each verified):
 
@@ -112,11 +113,26 @@ Schema facts learned by probing the API (each verified):
 
 Remaining to run the 78-case comparison:
 
-1. `choice` node for payment method — **done**. Next: `regex` nodes for date + amount
-   validation and an `escalate` node for the human-request escape hatch, discovering each
-   node type's config the same way. The `regex` node's pattern field is not in the typed
-   model surface inspected so far and may live in a freeform payload — the next thing to
-   pin down.
+**All three deterministic node types the collections rules need are proven in Thai, built
+entirely through the SDK — no console:**
+
+- `choice` (constrained pick) — `collectionsFlow`, capturing `FsiPaymentMethod`.
+- `split` + `matches_regex` condition (validation) — `dateValidationFlow`, rejecting an
+  impossible date via a regex on the `paymentDate` context variable. Deterministic
+  validation is condition-based, not a mystery node payload: `ConditionOperator` includes
+  `matches_regex`, and an `Operand` is `{ type: "context"|"constant"|…, name?, value? }`.
+- `escalate` (human handoff) — a terminal node with a Thai message (verified, probe flow
+  since deleted).
+
+Two unknowns remain before the 78-case comparison can run end to end:
+
+1. **Free-input capture.** The `split` validates a context variable; something must first
+   populate `paymentDate` / `paymentAmount` from free Thai speech. `choice` captures a
+   constrained slot; free-form capture likely uses an `AttachedSlot` (which carries its own
+   `regex`) or a capture node — not yet pinned down.
+2. **Runtime driver.** Scoring the 78 cases means attaching the flows to
+   `fsi-collections-th`, creating a build, deploying an alias, and driving a conversation
+   session with Thai utterances. The session/runtime API has not been explored yet.
 2. Attach the flow to `fsi-collections-th`, create an application **build**, and deploy an
    **alias**.
 3. Wire `--target acxd` in `compare_slot_capture.py` to drive a conversation session
