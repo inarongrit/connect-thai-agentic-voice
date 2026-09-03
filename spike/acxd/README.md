@@ -149,6 +149,19 @@ needed no build. Done via the SDK:
 - Build `00cf4eff-c816-4c42-994c-c5cbaafaa225` reached status **`BUILT`**, so the designer
   test chat is unblocked.
 
+**Runtime fix (a build alone was not enough):** the test chat first failed with a generic
+"technical issues" error because `collectionsFlow` referenced the `FsiPaymentMethod` slot
+in its `choice` node without **attaching** the slot to the flow. The runtime could not
+resolve it. Fixed by declaring on the flow: `slotTypes:[{name:"paymentMethod",
+type:"FsiPaymentMethod"}]` and `contextVariables:[{name:"paymentMethod", type:"text"}]`,
+then rebuilding. Lesson: a slot referenced by a node must also be attached to the flow,
+and a build succeeding does not prove the flow runs.
+
+**Verification limit:** the ACXD SDK exposes `GetConversation`/`ListConversations` but no
+start-conversation/test-drive command, so the interactive test chat cannot be exercised
+from code — it must be run in the console. That makes runtime debugging a
+change → retest-in-console → report loop.
+
 What is meaningfully testable now:
 
 - **`collectionsFlow`** — clean end-to-end: the test chat sends สะดวกชำระแบบไหนคะ, offers
