@@ -1,0 +1,174 @@
+{
+  "$comment": [
+    "Portable specification of the Thai bank-collections deterministic rules currently",
+    "enforced in lambda/mantle_dialogue.py.",
+    "",
+    "Purpose: the agentic CX designer blog observes that if the process is already",
+    "written down, you already have the part that takes longest. This file is that",
+    "written-down process, in a form a designer build can be checked against.",
+    "",
+    "Every expectation here is asserted against the live engine by",
+    "tests/test_acxd_spike.py, so this file cannot drift into aspiration. It states",
+    "what the engine does today, not what we hope a rebuild will do.",
+    "",
+    "Rules are split by who must own them. 'deterministic' rules must never be left to",
+    "a model; they map to deterministic nodes with slots, regex validation, retry counts",
+    "and explicit escalation paths. 'agentic' rules are the parts a Generative Journey",
+    "node should own."
+  ],
+  "version": "1.0",
+  "scenario": "bank",
+  "language": "th-TH",
+  "source_of_truth": "lambda/mantle_dialogue.py",
+
+  "ownership": {
+    "deterministic": [
+      "identity_verification",
+      "payment_method_choice",
+      "payment_date_capture",
+      "payment_amount_capture",
+      "assistance_option_choice",
+      "protective_signal_routing"
+    ],
+    "agentic": [
+      "open_question_understanding",
+      "tone_adaptation",
+      "knowledge_grounded_answers",
+      "clarifying_questions"
+    ]
+  },
+
+  "rules": {
+    "identity_verification": {
+      "owner": "deterministic",
+      "statement": "No account figure may be disclosed before the caller confirms identity.",
+      "detail": "Balance and due date are spoken only after identityConfirmed. Keypad entry is used because Contact Lens cannot redact Thai audio, and recording is suppressed around digit entry.",
+      "acxd_mapping": "Deterministic node with a custom slot type constrained to a short list of valid PINs, plus recording suppression around the node."
+    },
+
+    "payment_method_choice": {
+      "owner": "deterministic",
+      "statement": "The caller chooses exactly one payment method from a fixed set.",
+      "choices_th": ["ชำระเต็มจำนวน", "ชำระบางส่วน", "แบ่งชำระ"],
+      "acxd_mapping": "Custom slot type with three constrained values."
+    },
+
+    "payment_date_capture": {
+      "owner": "deterministic",
+      "statement": "A promised payment date must be a real calendar date, in the future, and within one year.",
+      "parameters": { "max_years_ahead": 1 },
+      "must_reject": {
+        "$comment": "Impossible or unusable dates. Each was a real bypass at some point.",
+        "impossible_day_for_month": [
+          "จะชำระในวันที่ 32 ธันวาคม",
+          "32 มกรา",
+          "32 ม.ค.",
+          "32 มค",
+          "30 กุมภาพันธ์",
+          "31 เมษายน",
+          "31 มิถุนายน",
+          "31 กันยายน",
+          "31 พฤศจิกายน",
+          "สามสิบสองมกราคม",
+          "วันที่ ๓๒ ธันวาคม",
+          "32/1",
+          "32-12",
+          "99/9"
+        ],
+        "impossible_month": ["1/13", "วันที่ 1 เดือน 13"],
+        "out_of_range_day": ["วันที่ 32", "วันที่ 0", "0 มกรา", "วันที่สามสิบสอง"],
+        "past": ["เมื่อวานนี้", "สัปดาห์ที่แล้ว", "เดือนที่แล้ว", "ปีที่แล้ว", "วันที่ 1 มกราคม 2560"],
+        "too_far_ahead": ["ปี 2600"]
+      },
+      "must_accept": {
+        "$comment": "A false rejection blocks a real payment promise, which is worse than the bug.",
+        "explicit": ["วันที่ 15 ธันวาคม", "วันที่ 29 กุมภาพันธ์", "วันที่ 30 เมษายน", "31 ธันวาคม", "15 ม.ค.", "1 ก.พ.", "วันที่ 1"],
+        "spoken_numerals": ["วันที่สิบห้า", "วันที่ยี่สิบเอ็ด"],
+        "numeric": ["15/12", "1/1", "28/2", "30/4"],
+        "with_year": ["วันที่ 5 มกราคม 2570", "วันที่ 20 ธันวาคม 2569"],
+        "relative": ["พรุ่งนี้", "วันนี้", "มะรืนนี้", "วันศุกร์หน้า", "วันจันทร์หน้า", "อีก 3 วัน", "ปลายเดือนนี้", "สิ้นเดือนนี้", "ต้นเดือนหน้า", "สัปดาห์หน้า"],
+        "clock_times_not_dates": ["14:30", "14.30", "บ่าย 2 โมง", "เช้า 9 โมง"],
+        "amounts_not_dates": ["2000 บาท", "20000 บาท"]
+      },
+      "acxd_mapping": "Built-in date slot plus a custom regex/validation layer for Thai numerals and abbreviated months. A dot-separated pair must stay a time, not a date, because the same validator guards callback and appointment slots."
+    },
+
+    "payment_amount_capture": {
+      "owner": "deterministic",
+      "statement": "A partial payment amount must be above zero, at or below the outstanding balance, and at least one percent of it.",
+      "parameters": { "token_amount_fraction": 0.01 },
+      "balance_for_examples": "15500",
+      "must_reject": {
+        "zero_or_less": ["0 บาท"],
+        "above_balance": ["20000 บาท", "สองแสนบาท"],
+        "token_amount": ["1 บาท", "100 บาท", "ห้าสิบบาท"]
+      },
+      "must_accept": ["5000 บาท", "15500 บาท", "สามพันบาท", "200 บาท", "155 บาท"],
+      "acxd_mapping": "Deterministic node calling a data request for the balance, then validating the captured amount against it. The floor is policy, not physics, and belongs in one place."
+    },
+
+    "assistance_option_choice": {
+      "owner": "deterministic",
+      "statement": "A caller who cannot pay is offered named relief options and the chosen one is recorded, never approved.",
+      "detail": "The first reply to hardship must offer relief rather than more ways to pay. Approval is a human decision, so the wording commits only to a follow-up.",
+      "choices_th": ["ลดค่างวดชั่วคราว", "พักชำระเงินต้น", "ขยายระยะเวลาผ่อนชำระ"],
+      "plan_ids": {
+        "reduce_installment": "ลดค่างวดชั่วคราว",
+        "principal_holiday": "พักชำระเงินต้น",
+        "extend_term": "ขยายระยะเวลาผ่อนชำระ"
+      },
+      "utterance_to_plan": {
+        "ขอลดค่างวดชั่วคราวค่ะ": "reduce_installment",
+        "ขอลดค่างวดได้ไหมคะ": "reduce_installment",
+        "อยากพักชำระเงินต้นก่อนค่ะ": "principal_holiday",
+        "ขอพักชำระเงินต้นค่ะ": "principal_holiday",
+        "ขอขยายระยะเวลาผ่อนได้ไหม": "extend_term"
+      },
+      "forbidden_wording": ["อนุมัติแล้ว", "อนุมัติเรียบร้อย", "ได้รับการอนุมัติ"],
+      "required_wording": ["ขึ้นอยู่กับการตรวจสอบ", "ติดต่อกลับ"],
+      "escape_hatch": {
+        "statement": "Asking for a person always works immediately, even mid-self-service.",
+        "utterances": ["ขอคุยกับเจ้าหน้าที่ค่ะ"],
+        "outcome": "human_transfer"
+      },
+      "unclear_answer": {
+        "statement": "Re-ask once, then fall back to a human referral rather than looping a menu.",
+        "outcome_after_second_miss": "payment_assistance_referral"
+      },
+      "acxd_mapping": "Custom slot type with three constrained values, a guardrail forbidding approval language, and an escalation path on the second validation failure."
+    },
+
+    "protective_signal_routing": {
+      "owner": "deterministic",
+      "statement": "Protective signals are detected before any model judgement and outrank the collections objective.",
+      "priority_order": ["do_not_contact", "vulnerability", "complaint", "hardship"],
+      "routing": {
+        "do_not_contact": { "outcome": "do_not_contact", "transfers_to_human": false, "note": "Honouring a contact ban means ending the call, not routing it to a person who would speak anyway." },
+        "vulnerability": { "outcome": "vulnerability_referral", "transfers_to_human": true },
+        "complaint": { "outcome": "complaint_logged", "transfers_to_human": true },
+        "hardship": { "outcome": "assistance_plan_requested", "transfers_to_human": false, "note": "Bank only. Insurance and brokerage transfer to a licensed person by regulation." }
+      },
+      "licensed_boundary": {
+        "statement": "Affordability and investment discussion with a distressed customer requires a licensed human.",
+        "insurance": "affordability_review",
+        "broker": "licensed_rep_referral"
+      },
+      "acxd_mapping": "Guardrails evaluated every turn, or deterministic nodes ahead of the Generative Journey node. Either way these must not be prompt instructions."
+    }
+  },
+
+  "handoff_contract": {
+    "statement": "Anything the assistant promises must not depend on a runtime lookup succeeding, and a promise of a transfer must be matched by an actual transfer.",
+    "outcomes_that_transfer": [
+      "affordability_review",
+      "complaint_logged",
+      "human_transfer",
+      "licensed_rep_referral",
+      "payment_assistance_referral",
+      "unresolved_needs_human",
+      "vulnerability_referral"
+    ],
+    "context_that_must_travel": ["handoffReason", "handoffSummary", "scenario", "outcomeDetail"],
+    "acxd_mapping": "Canvas state passes collected slots, variables and tool results to the receiving agent, which replaces the attribute plumbing we debugged three times."
+  }
+}
