@@ -173,6 +173,27 @@ What is meaningfully testable now:
 A build unlocks the test chat only. A real Amazon Connect voice/chat call additionally
 needs a deployed alias and the Connect flow's Agentic CX block pointed at it.
 
+## Interactive runtime works — the missing piece was input routing (confirmed 2026-09-03)
+
+A build unlocks the test chat, but the app also **crashed the moment any utterance was
+typed**, with the same generic "technical issues" error. Bisection located it precisely:
+
+- A message-only flow (`start → basic → end`) as the welcome flow **rendered its Thai
+  message fine** — so the runtime plays output correctly.
+- Typing any input then crashed — so the failure was in **routing the utterance**, not in
+  any node config.
+
+Fix: the application must declare `settings.defaultFlows.fallback` and `.unknown` (a
+catch-all flow) so unmatched input has somewhere to route. With those set, input routed
+correctly (typing `hello` returned the fallback flow's Thai reply). Confirmed in the
+console test chat.
+
+**Required application shape for a runnable app:** a `welcome` flow *and* `fallback` /
+`unknown` flows. A green build does not prove input handling; only a live test does.
+
+The app entry is now `collectionsFlow` (the deterministic Thai payment-method choice),
+with `fallbackFlow` as fallback/unknown. Build `BUILT`.
+
 ## Artifacts
 
 ### `collections_rules.json`
