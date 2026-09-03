@@ -194,6 +194,28 @@ console test chat.
 The app entry is now `collectionsFlow` (the deterministic Thai payment-method choice),
 with `fallbackFlow` as fallback/unknown. Build `BUILT`.
 
+## Choice node needs Match/No-match branches (root cause, 2026-09-03)
+
+With the app entry set to `collectionsFlow`, the console debugger trace showed
+`start → choice → Error → fallback`: the app correctly enters the welcome flow but the
+`choice` node errors at runtime, so the app falls through to the fallback flow (the reply
+seen in testing).
+
+Root cause, per the "Working with nodes" admin doc: a **User choice node requires branch
+paths** — a `Match` path, a `No match` path, and optional per-slot-value paths. It
+evaluates the response as slot/source match → flow routing → no-match, and follows the
+matching branch. The node built here had a **single unconditional child** and no
+Match/No-match branches, so routing the response had nowhere valid to go. (Also: the
+`source` value `slotType` IS valid — `ChoiceSource` is `context|dataRequest|local|slotType`
+— so that was not the fault; and the server dropped the `contextVariableKey` that was
+sent.)
+
+The exact child-node JSON for Match / No-match / slot-value branches is not fully
+determined by the SDK type surface. Fastest ground truth: build one User choice node in
+the console canvas (attach the slot, wire Match and No-match), save, then read it back
+with `GetFlow` and replicate the pattern for every deterministic node. This converts
+open-ended guessing into a one-time template diff.
+
 ## Artifacts
 
 ### `collections_rules.json`
