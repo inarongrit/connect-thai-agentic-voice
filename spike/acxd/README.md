@@ -92,7 +92,7 @@ Created in `acxd-demo` for the collections spike:
 | Application | `d1d1177c-c5b0-469b-ad62-8f2b6cf06502` / `fsi-collections-th` | Dedicated app; `acxd-app` left untouched. `settings.languageCode = th-TH`. |
 | Slot type | `FsiPaymentMethod` (th-TH) | ชำระเต็มจำนวน / ชำระบางส่วน / แบ่งชำระ |
 | Slot type | `FsiAssistanceOption` (th-TH) | ลดค่างวดชั่วคราว / พักชำระเงินต้น / ขยายระยะเวลาผ่อนชำระ |
-| Flow | `collectionsFlow` (th-TH) | Seed flow (start → end); to be filled with the deterministic nodes. |
+| Flow | `collectionsFlow` (th-TH) | **start → choice → end**, live. The `choice` node captures the Thai `FsiPaymentMethod` slot with prompt สะดวกชำระแบบไหนคะ — a deterministic constrained pick, built entirely as code. |
 
 Schema facts learned by probing the API (each verified):
 
@@ -101,16 +101,22 @@ Schema facts learned by probing the API (each verified):
 - A transition is expressed by a node's `childNodes: [{ nodeId: <target> }]`.
 - `FlowNodeType` values: `basic, choice, continue, define, end, escalate, flag, keyword,
   llmJudge, loop, mask, modify, multimodal, note, redirect, regex, route, routeToFlow,
-  split, start, transform, wait`. The **`regex`** node is the natural home for the
-  date/amount validators; **`choice`** for the constrained slot picks; **`escalate`** for
-  handoff.
+  split, start, transform, wait`. **`choice`** for constrained slot picks (working);
+  **`regex`** for the date/amount validators (next); **`escalate`** for handoff.
+- Node-type config lives in `FlowNode.metadata` (a `FlowNodeMetadata`): e.g.
+  `metadata.choice = { source:"slot", slotTypeId, contextVariableKey, showChoices }`.
+  `ChoiceSource` is `local` or `slot`.
+- Messages are `{ type: "text" | "ssml", body }` — the field is `body`, not `content`.
+- Update/Get flow use the path param **`flowIdentifier`**, not `flowId`.
 - Selectable models: Nova Micro, Nova Lite, Claude Haiku 4.5, Claude Sonnet 5.
 
 Remaining to run the 78-case comparison:
 
-1. Author the deterministic nodes into `collectionsFlow` (`choice` for payment method,
-   `regex` for date + amount validation, `escalate` for the human-request escape hatch),
-   discovering each node type's config fields the same way.
+1. `choice` node for payment method — **done**. Next: `regex` nodes for date + amount
+   validation and an `escalate` node for the human-request escape hatch, discovering each
+   node type's config the same way. The `regex` node's pattern field is not in the typed
+   model surface inspected so far and may live in a freeform payload — the next thing to
+   pin down.
 2. Attach the flow to `fsi-collections-th`, create an application **build**, and deploy an
    **alias**.
 3. Wire `--target acxd` in `compare_slot_capture.py` to drive a conversation session
