@@ -138,6 +138,28 @@ Two unknowns remain before the 78-case comparison can run end to end:
 3. Wire `--target acxd` in `compare_slot_capture.py` to drive a conversation session
    against the deployed alias, then score the 78 Thai cases against the engine control.
 
+## Testing requires a build (corrected 2026-09-03)
+
+The console gates the in-canvas test chat behind **"attach the flow to an application and
+successfully build it"** — contrary to an earlier assumption here that in-canvas testing
+needed no build. Done via the SDK:
+
+- `fsi-collections-th` now has both flows attached — `collectionsFlow` (welcome entry) and
+  `dateValidationFlow` — with `settings.defaultFlows.welcome = collectionsFlow`.
+- Build `00cf4eff-c816-4c42-994c-c5cbaafaa225` reached status **`BUILT`**, so the designer
+  test chat is unblocked.
+
+What is meaningfully testable now:
+
+- **`collectionsFlow`** — clean end-to-end: the test chat sends สะดวกชำระแบบไหนคะ, offers
+  the three Thai options, and captures the pick. No setup.
+- **`dateValidationFlow`** — attached and built, but its `split` checks `paymentDate`, which
+  nothing populates yet, so a plain run takes the OK branch. Seeing the rejection still
+  needs either the free-input capture step (next) or setting the variable in the debugger.
+
+A build unlocks the test chat only. A real Amazon Connect voice/chat call additionally
+needs a deployed alias and the Connect flow's Agentic CX block pointed at it.
+
 ## Artifacts
 
 ### `collections_rules.json`
