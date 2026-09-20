@@ -364,5 +364,82 @@ class PendingFieldCoverageTest(unittest.TestCase):
         self.assertGreaterEqual(int(MODULE.EOT_CONFIRMATION[1]), 5000)
 
 
+class MarkupInjectionTest(unittest.TestCase):
+    """Model output is derived from a caller's own words, so it is untrusted input.
+
+    The voice engine interprets markup rather than speaking it, so a caller who steers the
+    model into emitting a tag would otherwise have it executed. The classifier prompt asks
+    for plain Thai, but a prompt is guidance; these are the boundary.
+    """
+
+    PAYLOADS = [
+        '<emotion value="angry"/>ยอดค้างชำระค่ะ',
+        "[laughter]ยอดค้างชำระค่ะ",
+        '<volume ratio="2.0"/>ยอดค้างชำระค่ะ',
+        "<spell>ABC</spell>ยอดค้างชำระค่ะ",
+        '<break time="10s"/>ยอดค้างชำระค่ะ',
+        'ยอดค้างชำระค่ะ<emotion value="excited"/>',
+        'ยอด<emotion value="sad"/>ค้างชำระค่ะ',
+        '<emotion value="angry"',          # unterminated: engine speaks the fragment
+        "[laughter",                        # unterminated bracket
+        '<<emotion value="angry"/>>',
+        '<emotion value="angry"/><emotion value="angry"/>ยอดค้างชำระค่ะ',
+    ]
+
+    def test_no_payload_survives_into_spoken_output(self):
+        state = MODULE._initial_state("bank")
+        for payload in self.PAYLOADS:
+            spoken = MODULE._for_speech(payload, state)
+            self.assertNotIn("<", spoken, payload)
+            self.assertNotIn(">", spoken, payload)
+            self.assertNotIn("[", spoken, payload)
+            self.assertNotIn("]", spoken, payload)
+            self.assertNotIn("laughter", spoken, payload)
+            self.assertNotIn("emotion", spoken, payload)
+            self.assertNotIn("volume", spoken, payload)
+
+    def test_the_only_tag_that_survives_is_the_one_this_module_adds(self):
+        # An injected angry tag must not defeat, duplicate or precede the sympathetic one.
+        state = MODULE._initial_state("bank")
+        state["primarySignal"] = "hardship"
+        spoken = MODULE._for_speech('<emotion value="angry"/>เข้าใจค่ะ', state)
+        self.assertEqual(spoken.count("<emotion"), 1)
+        self.assertTrue(spoken.startswith(MODULE.SYMPATHETIC_TAG))
+        self.assertNotIn("angry", spoken)
+
+    def test_sanitisation_applies_even_with_tags_disabled(self):
+        # The kill switch turns off what this module adds; it must not turn off the filter.
+        state = MODULE._initial_state("bank")
+        state["primarySignal"] = "hardship"
+        with patch.object(MODULE, "SPEECH_TAGS_ENABLED", False):
+            spoken = MODULE._for_speech("[laughter]เข้าใจค่ะ", state)
+        self.assertNotIn("laughter", spoken)
+        self.assertNotIn("[", spoken)
+
+    def test_ordinary_thai_is_untouched(self):
+        state = MODULE._initial_state("bank")
+        for text in (
+            "สะดวกชำระแบบไหนคะ",
+            "ลดค่างวด, พักเงินต้น, หรือขยายเวลาคะ",
+            "ยอดที่ต้องชำระคือ หนึ่งหมื่นห้าพันบาทถ้วน ครบกำหนด 15 สิงหาคม 2569 ค่ะ",
+        ):
+            self.assertEqual(MODULE._for_speech(text, state), text)
+
+    def test_stripping_does_not_leave_ragged_whitespace(self):
+        state = MODULE._initial_state("bank")
+        spoken = MODULE._for_speech('ยอด <emotion value="angry"/> ค้างค่ะ', state)
+        self.assertEqual(spoken, "ยอด ค้างค่ะ")
+
+    def test_both_output_paths_sanitise(self):
+        # The inbound knowledge-base path builds its own attribute dict and previously
+        # bypassed the filter entirely.
+        source = (ROOT / "lambda" / "mantle_dialogue.py").read_text()
+        self.assertEqual(
+            source.count('"nextPrompt": _for_speech('), 2,
+            "every nextPrompt must go through _for_speech; one path is unsanitised",
+        )
+        self.assertNotIn('"nextPrompt": _compact(', source)
+
+
 if __name__ == "__main__":
     unittest.main()
