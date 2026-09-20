@@ -275,6 +275,9 @@ class DictatedStageCoverageTest(unittest.TestCase):
         "paymentAmount": "payment_amount",
         "preferredTime": "preferredTime",
         "callbackTime": "callbackTime",
+        # Retail: a delivery date is dictated exactly like a payment date, which is why
+        # the retail journey needed no new pacing rule -- only this entry.
+        "deliveryDate": "deliveryDate",
     }
 
     def test_every_dictated_prompt_has_a_dictated_stage(self):

@@ -119,7 +119,7 @@ def _thai_baht_words(amount):
     return spoken + (_thai_integer_words(satang) + "สตางค์" if satang else "ถ้วน")
 
 
-SCENARIOS = {"bank", "insurance", "broker"}
+SCENARIOS = {"bank", "insurance", "broker", "retail"}
 YES_WORDS = re.compile(r"ใช่|ถูกต้อง|ยืนยัน|ตกลง|โอเค|ได้เลย|ได้ครับ|ได้ค่ะ|ได้คะ|ครับผม")
 NO_WORDS = re.compile(r"ไม่ใช่|ไม่ถูก|ไม่ต้อง|ไม่สะดวก|ไม่ได้|ผิด|ขอแก้|เปลี่ยน")
 DATE_WORDS = re.compile(
@@ -161,6 +161,24 @@ SIGNAL_PATTERNS = (
 )
 SHARED_SIGNAL_INTENTS = {"hardship", "vulnerability", "complaint", "do_not_contact"}
 
+# A shared signal does not mean the same thing in every vertical, and the patterns were
+# written for collections. "ขอเลื่อน" is in the hardship pattern because on a collections
+# call it means "I cannot pay yet" -- but in retail it is simply "please move my delivery",
+# the ordinary request rather than a distress signal. Left unscoped, every retail reschedule
+# was detected as hardship and routed to a licensed-representative referral before the
+# retail handler ever saw the turn.
+#
+# Only hardship is narrowed. Vulnerability, complaint and do-not-contact mean the same thing
+# to a retail caller as to a borrower, and must keep working everywhere.
+SIGNAL_SCOPE = {
+    "retail": SHARED_SIGNAL_INTENTS - {"hardship"},
+}
+
+
+def _signal_applies(scenario, signal):
+    """Whether a detected shared signal is meaningful for this scenario."""
+    return signal in SIGNAL_SCOPE.get(scenario, SHARED_SIGNAL_INTENTS)
+
 # Outcomes that warrant a live agent. Each one means the conversation has reached
 # something an automated caller must not settle on its own: a request for a human,
 # a vulnerability or complaint disclosure, a regulated recommendation, or a failure
@@ -178,6 +196,7 @@ HANDOFF_OUTCOMES = frozenset({
     # set, so the flow would have played the transfer wording and then hung up -- the
     # same defect as the first handoff deploy, in a different outcome.
     "payment_assistance_referral",
+    "return_inspection_referral",
 })
 
 # Why the agent is receiving this call, in Thai, for the whisper and the CCP.
@@ -189,6 +208,7 @@ HANDOFF_REASON_TH = {
     "licensed_rep_referral": "ต้องผู้แนะนำการลงทุนที่ได้รับอนุญาต",
     "affordability_review": "ขอทบทวนความคุ้มครองและค่าเบี้ยที่เหมาะสม",
     "payment_assistance_referral": "ขอผ่อนผันการชำระ",
+    "return_inspection_referral": "สินค้าเสียหาย ต้องตรวจสอบก่อนคืน",
 }
 
 SCENARIO_TH = {"bank": "ธนาคาร", "insurance": "ประกัน", "broker": "หลักทรัพย์"}
@@ -537,6 +557,21 @@ ALLOWED_INTENTS = {
         "human",
         "unknown",
     } | SHARED_SIGNAL_INTENTS,
+    # Retail is the first non-FSI vertical and deliberately introduces no new dialogue
+    # primitive: a journey choice, a dictated date, a read-back, a reason choice and a
+    # handoff are all machinery the FSI scenarios already prove. It exists to show the
+    # engine is not bank-specific, so resisting new primitives is the point.
+    "retail": {
+        "reschedule",
+        "track_order",
+        "return_request",
+        "declined",
+        "callback",
+        "human",
+        "unknown",
+    # Scoped, not the full shared set: hardship is an affordability concept and does not
+    # apply to a delivery. See SIGNAL_SCOPE.
+    } | SIGNAL_SCOPE["retail"],
 }
 
 
@@ -548,6 +583,7 @@ def _initial_state(scenario):
             "bank": "verify_identity",
             "insurance": "qualify_need",
             "broker": "choose_action",
+            "retail": "choose_journey",
         }[scenario],
         "turn": 0,
         "identityConfirmed": False,
@@ -707,6 +743,8 @@ def _classifier_prompt(scenario, state, transcript, facts):
         "bank": f"dispute, declined, callback, human, unknown, {shared}",
         "insurance": f"need_health, need_life, need_savings, appointment, declined, callback, product_question, human, unknown, {shared}",
         "broker": f"seminar, consultation, advice_request, declined, callback, human, unknown, {shared}",
+        "retail": ("reschedule, track_order, return_request, declined, callback, human, unknown, "
+                   + ", ".join(sorted(SIGNAL_SCOPE["retail"]))),
     }
     # Where two intents in a scenario read alike in Thai, say which is which. Measured:
     # "อยากคุยกับผู้แนะนำการลงทุนค่ะ" ("I'd like to talk to an investment adviser") came
@@ -719,6 +757,15 @@ def _classifier_prompt(scenario, state, transcript, facts):
             "investment adviser about investing; human means the caller wants to be "
             "transferred to a live staff member now, or is unhappy, or asks for a person "
             "generally. "
+        ),
+        # reschedule and track_order both mention the delivery, so say which is which:
+        # asking WHEN it will arrive is tracking, asking to MOVE it is rescheduling.
+        "retail": (
+            "reschedule means the caller wants to change the delivery date or time; "
+            "track_order means the caller is only asking where the order is or when it "
+            "will arrive, without asking to change it; return_request means the caller "
+            "wants to send an item back or get a refund; complaint means the caller is "
+            "unhappy about service or handling rather than requesting one of those three. "
         ),
     }
     return (
@@ -832,12 +879,15 @@ def _readback(state, field, raw):
         return f"ขอยืนยันนะคะ คุณจะ{payment}{when} จำนวน {amount} ถูกต้องไหมคะ"
     if field == "preferredTime":
         return f"ขอยืนยันเวลานัดหมาย {_strip_politeness(raw)} ถูกต้องไหมคะ"
+    if field == "deliveryDate":
+        return f"ขอยืนยันนะคะ จะจัดส่ง{_date_phrase(raw)} ถูกต้องไหมคะ"
     return f"ขอยืนยันเวลาที่ให้โทรกลับ {_strip_politeness(raw)} ถูกต้องไหมคะ"
 
 
 def _ask_for(field):
     return {
         "paymentDate": "กรุณาระบุวันที่สะดวกชำระค่ะ",
+        "deliveryDate": "กรุณาระบุวันที่สะดวกรับสินค้าค่ะ",
         "paymentAmount": "กรุณาระบุจำนวนเงินงวดแรกค่ะ",
         "preferredTime": "กรุณาระบุวัน, หรือเวลาที่สะดวกนัดหมายค่ะ",
         "callbackTime": "กรุณาระบุวัน, หรือเวลาที่สะดวกให้โทรกลับค่ะ",
@@ -1247,6 +1297,8 @@ def _complete(state, outcome_type, message):
         "topicInterest": state.get("topicInterest", "general_market_update"),
         "customerGoal": state.get("customerGoal", "unspecified"),
         "experienceLevel": state.get("experienceLevel", "unspecified"),
+        "deliveryDate": state.get("deliveryDate", "unspecified"),
+        "returnReason": state.get("returnReason", "unspecified"),
         "outcomeDetail": _detail_with_signal(state, message),
         "handoffRequired": "true" if outcome_type in HANDOFF_OUTCOMES else "false",
         "handoffReason": HANDOFF_REASON_TH.get(outcome_type, ""),
@@ -1315,6 +1367,10 @@ def _after_confirmation(state):
                                  "จะส่งเรื่องให้ทีมช่วยเหลือตรวจสอบต่อและติดต่อกลับค่ะ")
             state["outcomeDetail"] = "confirmed payment commitment"
             return _complete(state, "payment_commitment", "ยืนยันแผนการชำระเรียบร้อยแล้ว ขอบคุณค่ะ")
+    if scenario == "retail" and field == "deliveryDate":
+        state["outcomeDetail"] = f"delivery rescheduled to {raw}"
+        return _complete(state, "delivery_rescheduled",
+                         "ยืนยันวันจัดส่งใหม่เรียบร้อยแล้ว จะส่งข้อความยืนยันให้อีกครั้งค่ะ")
     if field == "callbackTime":
         state["outcomeDetail"] = f"callback {raw}"
         return _complete(state, "callback", "ยืนยันเวลาติดต่อกลับเรียบร้อยแล้ว ขอบคุณค่ะ")
@@ -1426,6 +1482,59 @@ ASSISTANCE_PLAN_TH = {
 
 def _assistance_plan(text):
     return _match_first(BANK_ASSISTANCE_MATCHERS, text)
+
+
+# ── Retail ───────────────────────────────────────────────────────────────────────────
+# Three journeys, all built from primitives the FSI scenarios already prove. Matched
+# deterministically first: these patterns are what keep a turn on the ~216 ms path
+# instead of paying ~1000 ms for a model call, which is most of why the demo feels quick.
+RETAIL_JOURNEY_CHOICES = ("เลื่อนวันจัดส่ง", "ติดตามพัสดุ", "ส่งคืนสินค้า")
+RETAIL_JOURNEY_MATCHERS = (
+    # Tracking is checked before rescheduling: "พัสดุถึงเมื่อไหร่" asks when it arrives,
+    # which is a question, while "เลื่อน" asks to move it, which is a request. Ordering
+    # them the other way made every tracking question look like a reschedule.
+    ("track_order", re.compile(
+        r"ติดตาม|ตามพัสดุ|พัสดุอยู่ไหน|ของอยู่ไหน|ถึงเมื่อไหร่|ถึงวันไหน|เมื่อไหร่จะถึง|"
+        r"สถานะ|ส่งถึงยัง|ได้รับของยัง|ของยังไม่ถึง|เช็คพัสดุ")),
+    ("reschedule", re.compile(
+        r"เลื่อน|เปลี่ยนวัน|เปลี่ยนเวลา|ขอส่งวัน|ส่งวันอื่น|วันอื่น|ไม่อยู่บ้าน|ไม่ว่าง|"
+        r"รับของไม่ได้|ขอรับวัน|นัดส่งใหม่|ส่งใหม่")),
+    ("return_request", re.compile(
+        r"คืนสินค้า|ส่งคืน|ขอคืน|คืนของ|คืนเงิน|ขอเปลี่ยนสินค้า|เปลี่ยนของ|"
+        r"ไม่อยากได้|ยกเลิกคำสั่งซื้อ|รีฟัน")),
+)
+
+RETAIL_RETURN_CHOICES = ("สินค้าเสียหาย", "ได้ของผิด", "เปลี่ยนใจ")
+RETAIL_RETURN_MATCHERS = (
+    ("damaged", re.compile(r"เสียหาย|ชำรุด|แตก|พัง|บุบ|ฉีก|ไม่สมบูรณ์|ใช้ไม่ได้|เปียก")),
+    ("wrong_item", re.compile(r"ของผิด|ผิดรุ่น|ผิดสี|ผิดไซส์|ผิดขนาด|ไม่ใช่ที่สั่ง|สลับ|ส่งผิด")),
+    ("changed_mind", re.compile(r"เปลี่ยนใจ|ไม่อยากได้|ไม่ต้องการแล้ว|สั่งผิด|ซื้อเกิน|ไม่ชอบ")),
+)
+RETAIL_RETURN_REASON_TH = {
+    "damaged": "สินค้าเสียหาย",
+    "wrong_item": "ได้ของผิด",
+    "changed_mind": "เปลี่ยนใจ",
+}
+
+
+RETAIL_JOURNEYS = frozenset({"reschedule", "track_order", "return_request"})
+# "Anything else?" is declined in Thai with "ไม่มี" ("there isn't any") far more often than
+# with a bare "ไม่", and the shared NO_WORDS set does not cover it. Kept local rather than
+# widened globally, because "ไม่มีเงิน" is a hardship signal in collections, not a refusal.
+RETAIL_NOTHING_ELSE_RE = re.compile(
+    r"ไม่มีแล้ว|ไม่มีอีก|ไม่มี$|ไม่มีค่ะ|ไม่มีครับ|พอแล้ว|เท่านี้|ครบแล้ว|หมดแล้ว|ขอบคุณค่ะ$|ขอบคุณครับ$")
+
+
+def _retail_journey(text):
+    return _match_first(RETAIL_JOURNEY_MATCHERS, text)
+
+
+def _retail_nothing_else(text):
+    return bool(RETAIL_NOTHING_ELSE_RE.search(_despace(_compact(text, 80))))
+
+
+def _retail_return_reason(text):
+    return _match_first(RETAIL_RETURN_MATCHERS, text)
 INSURANCE_NEED_CHOICES = ("สุขภาพ", "ชีวิต", "การออม")
 BROKER_ACTION_CHOICES = ("สนใจรับรายละเอียดสัมมนา", "นัดคุยกับผู้แนะนำการลงทุน")
 BROKER_TOPIC_CHOICES = ("พื้นฐานการลงทุน", "การกระจายพอร์ต", "การวางแผนเกษียณ", "ความรู้เรื่องตลาด")
@@ -1852,6 +1961,129 @@ def _handle_broker(state, transcript, classified):
     return {"done": False, "message": "กรุณาตอบคำถามสั้น ๆ อีกครั้งค่ะ"}
 
 
+def _retail_return_prompt():
+    return f"สาเหตุที่ต้องการคืนคือ{_spoken_options(RETAIL_RETURN_CHOICES)}คะ"
+
+
+def _retail_journey_prompt():
+    return f"ต้องการ{_spoken_options(RETAIL_JOURNEY_CHOICES)}คะ"
+
+
+def _retail_status_message(attributes):
+    """Order status read from the contact attributes the flow already sends.
+
+    dueDate carries the currently scheduled delivery date, exactly as it carries the
+    payment due date for collections. Reusing it is why a fourth vertical needed no new
+    flow attribute. The date keeps its "15 สิงหาคม 2569" shape, which the voice reads
+    correctly and which the other scenarios already speak the same way.
+    """
+    when = _compact(attributes.get("dueDate"), 40)
+    if when and when != "-":
+        return f"พัสดุอยู่ระหว่างจัดส่ง กำหนดถึงวันที่ {when} ค่ะ มีเรื่องอื่นให้ช่วยดูแลอีกไหมคะ"
+    return "พัสดุอยู่ระหว่างจัดส่งตามกำหนดค่ะ มีเรื่องอื่นให้ช่วยดูแลอีกไหมคะ"
+
+
+def _retail_start_journey(state, journey, attributes):
+    """Enter one of the three journeys.
+
+    Shared so that answering "anything else?" re-enters a journey by the same door as
+    the opening turn, instead of a second copy of the routing drifting out of step.
+    """
+    state["journey"] = journey
+    if journey == "reschedule":
+        state["stage"] = "deliveryDate"
+        return {"done": False, "message": _ask_for("deliveryDate")}
+    if journey == "track_order":
+        state["stage"] = "offer_more"
+        return {"done": False, "message": _retail_status_message(attributes)}
+    state["stage"] = "return_reason"
+    return {"done": False, "message": _retail_return_prompt()}
+
+
+def _handle_retail(state, transcript, classified, attributes):
+    """Retail: reschedule a delivery, track an order, or request a return.
+
+    The first non-FSI vertical, and deliberately built from primitives the FSI scenarios
+    already prove -- a journey choice, a dictated date with a read-back, a reason choice
+    and a handoff. Nothing here is a new dialogue pattern, which is the point: it shows
+    the engine is not bank-shaped.
+    """
+    common = _common_intent(state, classified)
+    if common:
+        return common
+    stage = state["stage"]
+    journey = _retail_journey(transcript)
+    if journey is None and classified["intent"] in RETAIL_JOURNEYS:
+        journey = classified["intent"]
+
+    if stage == "choose_journey":
+        if journey:
+            return _retail_start_journey(state, journey, attributes)
+        return {"done": False, "message": _retail_journey_prompt()}
+
+    if stage == "deliveryDate":
+        # A caller who changes their mind mid-journey is followed, not corrected.
+        if journey and journey != "reschedule":
+            return _retail_start_journey(state, journey, attributes)
+        if _looks_datetime(transcript):
+            return {"done": False, "message": _set_pending(state, "deliveryDate", transcript)}
+        return {"done": False, "message": _ask_for("deliveryDate")}
+
+    if stage == "return_reason":
+        reason = _retail_return_reason(transcript)
+        if reason is None:
+            if journey and journey != "return_request":
+                return _retail_start_journey(state, journey, attributes)
+            return {"done": False, "message": _retail_return_prompt()}
+        state["returnReason"] = reason
+        state["outcomeDetail"] = f"return reason={reason}"
+        if reason == "damaged":
+            # Damage needs a person: photographs, courier liability and any goodwill
+            # decision are all outside what this assistant is allowed to promise.
+            return _complete(
+                state, "return_inspection_referral",
+                "ขออภัยด้วยนะคะ กรณีสินค้าเสียหายจะให้เจ้าหน้าที่ตรวจสอบและดูแลต่อค่ะ "
+                + HANDOFF_HOLD_TH,
+            )
+        return _complete(
+            state, "return_requested",
+            f"รับเรื่องขอคืนสินค้าเนื่องจาก{RETAIL_RETURN_REASON_TH[reason]}เรียบร้อยแล้ว "
+            "จะส่งรายละเอียดวิธีส่งคืนให้ทางข้อความค่ะ",
+        )
+
+    if stage == "offer_more":
+        if journey:
+            return _retail_start_journey(state, journey, attributes)
+        if _is_no(transcript) or _retail_nothing_else(transcript):
+            state["outcomeDetail"] = "order status provided"
+            return _complete(state, "order_status_given", "ขอบคุณที่ติดต่อเข้ามานะคะ")
+        if _is_yes(transcript):
+            state["stage"] = "choose_journey"
+            return {"done": False, "message": _retail_journey_prompt()}
+        return {"done": False, "message": "มีเรื่องอื่นให้ช่วยดูแลอีกไหมคะ"}
+
+    return {"done": False, "message": _retail_journey_prompt()}
+
+
+def _dispatch_scenario(scenario, state, transcript, classified, attributes):
+    """Route a turn to its scenario handler.
+
+    Explicit per scenario rather than an if/elif/else with a catch-all: broker used to be
+    the implicit else, so a scenario name that slipped past validation would have been
+    handled as a brokerage call. With a fourth vertical that silent fallback becomes a
+    real hazard, so an unknown scenario now fails loudly instead.
+    """
+    if scenario == "bank":
+        return _handle_bank(state, transcript, classified, attributes)
+    if scenario == "insurance":
+        return _handle_insurance(state, transcript, classified)
+    if scenario == "broker":
+        return _handle_broker(state, transcript, classified)
+    if scenario == "retail":
+        return _handle_retail(state, transcript, classified, attributes)
+    raise ValueError(f"no handler for scenario {scenario!r}")
+
+
 def _needs_model(scenario, state, transcript):
     stage = state.get("stage", "")
     if POLICY_V2 and stage in {"hardship_options", "assistance_options"}:
@@ -1866,6 +2098,17 @@ def _needs_model(scenario, state, transcript):
         if stage in {"payment_amount", "paymentAmount"} and _looks_amount(transcript):
             return False
         if stage in {"callback_time", "callbackTime"} and _looks_datetime(transcript):
+            return False
+    if scenario == "retail":
+        if stage == "choose_journey" and _retail_journey(transcript):
+            return False
+        if stage == "deliveryDate" and _looks_datetime(transcript):
+            return False
+        if stage == "return_reason" and _retail_return_reason(transcript):
+            return False
+        if stage == "offer_more" and (_is_yes(transcript) or _is_no(transcript)
+                                      or _retail_nothing_else(transcript)
+                                      or _retail_journey(transcript)):
             return False
     if scenario in {"insurance", "broker"}:
         if stage in {"preferred_time", "preferredTime", "appointment_time", "consultation_time"} and _looks_datetime(transcript):
@@ -1901,12 +2144,14 @@ EOT_DEFAULT = ("0.7", "5000")       # open-ended replies -- documented default p
 # by transforming field names. It is spelled out, and DictatedStageCoverageTest checks it
 # against the _ask_for prompt table so a new dictated prompt cannot be added without a
 # matching entry here.
-DICTATED_STAGES = {"payment_amount", "paymentDate", "preferredTime", "callbackTime"}
+DICTATED_STAGES = {"payment_amount", "paymentDate", "preferredTime", "callbackTime",
+                   "deliveryDate"}
 # Pending readback fields that are themselves dictated, used when a caller rejects the
 # readback and restates the value on the same turn. Must stay in step with the dictated
 # prompts in _ask_for: callbackTime was missing here at first, so a caller restating a
 # callback time got the 800 ms yes/no timeout and was cut off mid-phrase.
-DICTATED_FIELDS = {"paymentDate", "paymentAmount", "preferredTime", "callbackTime"}
+DICTATED_FIELDS = {"paymentDate", "paymentAmount", "preferredTime", "callbackTime",
+                   "deliveryDate"}
 
 
 # Signals where a sympathetic delivery matches the words being spoken. Emotion tags are
@@ -2101,7 +2346,7 @@ def handler(event, context):
     signal_result = None
     if POLICY_V2 and pending_result is None and not repeat_requested:
         detected = _detect_signal(transcript)
-        if detected:
+        if detected and _signal_applies(scenario, detected):
             signal_result = _apply_signal(state, detected, scenario)
     if repeat_requested:
         result = {"done": False, "message": state["lastMessage"]}
@@ -2114,20 +2359,10 @@ def handler(event, context):
     elif scenario == "bank" and state["stage"] == "verify_identity":
         result = _handle_bank(state, transcript, classified, attributes)
     elif not _needs_model(scenario, state, transcript):
-        if scenario == "bank":
-            result = _handle_bank(state, transcript, classified, attributes)
-        elif scenario == "insurance":
-            result = _handle_insurance(state, transcript, classified)
-        else:
-            result = _handle_broker(state, transcript, classified)
+        result = _dispatch_scenario(scenario, state, transcript, classified, attributes)
     else:
         classified = _classify(scenario, state, transcript, _facts(attributes, state))
-        if scenario == "bank":
-            result = _handle_bank(state, transcript, classified, attributes)
-        elif scenario == "insurance":
-            result = _handle_insurance(state, transcript, classified)
-        else:
-            result = _handle_broker(state, transcript, classified)
+        result = _dispatch_scenario(scenario, state, transcript, classified, attributes)
     if repeat_requested:
         state["noProgress"] = 0
     elif POLICY_V2 and not result.get("done"):
@@ -2163,6 +2398,8 @@ def handler(event, context):
         "topicInterest": result.get("topicInterest", "general_market_update"),
         "customerGoal": result.get("customerGoal", state.get("customerGoal", "unspecified")),
         "experienceLevel": result.get("experienceLevel", state.get("experienceLevel", "unspecified")),
+        "deliveryDate": result.get("deliveryDate", state.get("deliveryDate", "unspecified")),
+        "returnReason": result.get("returnReason", state.get("returnReason", "unspecified")),
         "primarySignal": state.get("primarySignal", "none"),
         "policyVersion": "v2" if POLICY_V2 else "v1",
         # The flow compares on handoffRequired to decide whether to fetch an agent.

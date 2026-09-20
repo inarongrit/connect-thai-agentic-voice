@@ -80,6 +80,24 @@ BRIEFS = {
         "CONDUCT: helpful and concise, one invitation only, accept no immediately, no hard sell, urgency, scarcity, fear, or FOMO. "
         "FORBIDDEN: stock recommendations, returns, price targets, suitability decisions, invented information, loans, or insurance."
     ),
+    # Retail carries far less regulatory weight than the three FSI scenarios: there is no
+    # licensed-agent boundary and no approved-facts allowlist. What it must not do is
+    # promise an outcome that depends on inspection or on a courier, so damage is routed
+    # to a person rather than resolved on the call.
+    "retail": (
+        "ROLE: Customer care officer at an online retailer. CUSTOMER: {name}. "
+        "FACTS: ORDER_VALUE={amount}; SCHEDULED_DELIVERY={due}. "
+        "OBJECTIVE: identify which of three journeys the customer wants -- reschedule the delivery, "
+        "track the order, or return an item -- then complete only that one. "
+        "RESCHEDULE: collect one new delivery date, read it back verbatim, and confirm before closing. "
+        "TRACK: state SCHEDULED_DELIVERY as given and ask whether anything else is needed. "
+        "RETURN: collect one reason from damaged item, wrong item, or changed mind. "
+        "ESCALATE: a damaged item goes to a person, because photographs, courier liability, and any "
+        "goodwill decision are outside what this assistant may promise. "
+        "CONDUCT: brief and practical, one question per turn, follow the customer if they switch journey. "
+        "FORBIDDEN: invented tracking detail, courier names, refund amounts or timing, compensation, "
+        "delivery guarantees, or any promise that an item is in stock."
+    ),
 }
 
 INITIAL_STATE = {
@@ -130,6 +148,23 @@ INITIAL_STATE = {
         "confirmationRequiredFor": ["consultation"],
         "outcome": "pending",
         "turnBudget": 8,
+        "noiseRecovery": {
+            "neverGuess": True,
+            "repeatBeforeCallback": 2,
+            "fallback": "offer_callback",
+        },
+    },
+    # Retail closes in fewer turns than the FSI journeys: one journey choice, then at most
+    # one value plus its read-back. The budget is tighter for that reason, not by oversight.
+    "retail": {
+        "version": 2,
+        "scenario": "retail",
+        "stage": "choose_journey",
+        "objective": "identify one of reschedule, track, or return, then complete only that journey",
+        "requiredBeforeClose": ["journey"],
+        "confirmationRequiredFor": ["delivery_rescheduled"],
+        "outcome": "pending",
+        "turnBudget": 6,
         "noiseRecovery": {
             "neverGuess": True,
             "repeatBeforeCallback": 2,

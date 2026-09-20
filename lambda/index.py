@@ -31,7 +31,7 @@ VOICE_LAB_LANGUAGE_RE = re.compile(r"^[a-z]{2}-[A-Z]{2}$")
 VOICE_LAB_VOICE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,31}$")
 MANTLE_ENABLED = os.environ.get("MANTLE_ENABLED", "false").lower() == "true"
 
-VALID_SCENARIOS = {"bank", "insurance", "broker"}
+VALID_SCENARIOS = {"bank", "insurance", "broker", "retail"}
 PHONE_RE = re.compile(r"^\+66\d{8,9}$")
 
 SCENARIO_DEFAULTS = {
@@ -57,6 +57,24 @@ def _dynamic_bank_facts(current_date=None):
         "amount": f"{baht:,}.{satang:02d}",
         "dueDate": f"{due.day} {THAI_MONTHS[due.month - 1]} {due.year + 543}",
     }
+
+def _dynamic_retail_facts(current_date=None):
+    """Generate one trusted set of retail order facts for a single contact.
+
+    Mirrors the Bank generator, with two differences that matter on a call: the order
+    value is a whole-baht price rather than a balance with satang, and the delivery date
+    is in the FUTURE, because a delivery you can still reschedule has not happened yet.
+    Collections works backwards from an overdue date; retail works forwards.
+    """
+    today = current_date or datetime.now(BANGKOK_TZ).date()
+    baht = 300 + secure_random.randbelow(9_700)
+    days_ahead = 2 + secure_random.randbelow(6)
+    due = today + timedelta(days=days_ahead)
+    return {
+        "amount": f"{baht:,}",
+        "dueDate": f"{due.day} {THAI_MONTHS[due.month - 1]} {due.year + 543}",
+    }
+
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -99,11 +117,21 @@ def _contact_status(body):
     contact_id = _contact_id_from_token(body.get("statusToken", ""))
     contact = connect.describe_contact(InstanceId=INSTANCE_ID, ContactId=contact_id)["Contact"]
     state = str(contact.get("State", "")).upper()
-    ended = bool(contact.get("DisconnectTimestamp")) or state in {"ENDED", "MISSED", "ERROR", "REJECTED"}
+    disconnected_at = contact.get("DisconnectTimestamp")
+    connected_at = contact.get("ConnectedToSystemTimestamp")
+    ended = bool(disconnected_at) or state in {"ENDED", "MISSED", "ERROR", "REJECTED"}
+    connected_seconds = 0.0
+    if connected_at and disconnected_at:
+        connected_seconds = max(0.0, (disconnected_at - connected_at).total_seconds())
     return _resp(200, {
         "status": "completed" if ended else "active",
         "state": state or None,
-        "connected": bool(contact.get("ConnectedToSystemTimestamp")),
+        # For an outbound API contact this timestamp is absent when the destination
+        # never answers. The browser previously ignored it and priced the 60-second
+        # ring timeout as if AI, dialogue and Contact Lens had all run.
+        "connected": bool(connected_at),
+        "connectedDurationSeconds": round(connected_seconds, 3),
+        "disconnectReason": contact.get("DisconnectReason") or None,
     })
 
 
@@ -352,7 +380,12 @@ def _attributes(body):
     name = str(body.get("name", "")).strip()[:50] or "ลูกค้า"
     if scenario not in VALID_SCENARIOS:
         raise ValueError("scenario must be one of: bank, insurance, broker")
-    defaults = _dynamic_bank_facts() if scenario == "bank" else SCENARIO_DEFAULTS[scenario]
+    if scenario == "bank":
+        defaults = _dynamic_bank_facts()
+    elif scenario == "retail":
+        defaults = _dynamic_retail_facts()
+    else:
+        defaults = SCENARIO_DEFAULTS[scenario]
     return name, {
         "scenario": scenario,
         "customerName": name,
