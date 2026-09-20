@@ -2305,9 +2305,9 @@ Resources:
           # be the most forgiving was the slowest one.
           #
           # Confidence stays the primary lever; the windows are now short because they are a backstop.
-          EOT_CONFIRMATION = ("0.5", "1200")  # ใช่ / ไม่ใช่ -- one word, should close on confidence
-          EOT_DICTATED = ("0.8", "2500")      # dates and amounts -- ~2x a natural Thai mid-turn pause
-          EOT_DEFAULT = ("0.6", "1500")       # most turns -- this tier sets the conversational feel
+          EOT_CONFIRMATION = ("0.5", "600")   # ใช่ / ไม่ใช่ -- AWS's documented yes/no value is ~500
+          EOT_DICTATED = ("0.8", "2000")      # dates and amounts -- still ~2x a Thai mid-turn pause
+          EOT_DEFAULT = ("0.6", "1500")       # most turns -- see the note below before cutting this
 
           # Stages whose next caller utterance is dictated -- a date, a time, or an amount -- rather
           # than a choice or a free reply. These are the turns where a Thai speaker pauses
@@ -2461,10 +2461,23 @@ Resources:
               return {
                   "eotThreshold": threshold,
                   "eotTimeoutMs": timeout,
-                  # Barge-in defaults to true in Advanced ASR and that is what a natural
-                  # conversation wants. It is emitted explicitly so a prompt that must be heard
-                  # in full can turn it off per turn without a flow change.
-                  "allowInterrupt": "true",
+                  # Barge-in, decided per turn rather than globally.
+                  #
+                  # ON for menus, open questions and re-prompts: a caller cutting in with their choice
+                  # is the point, and blocking that is what makes a bot feel like an IVR.
+                  #
+                  # OFF while a read-back is playing. "คุณจะชำระเต็มจำนวนในวันที่ยี่สิบ ถูกต้องไหมคะ"
+                  # carries the commitment AND the date. If the caller talks over it and says ใช่ after
+                  # only the first clause, we have recorded consent to something they never heard in
+                  # full -- which for a financial commitment is a compliance problem, not a UX one. AWS
+                  # names this exact case as a reason to disable it, alongside legal and disclosure
+                  # language. A read-back is short, so the cost of hearing it out is small.
+                  #
+                  # Interrupting does NOT let a caller wander off the call's purpose: the classifier
+                  # vocabulary is closed per scenario and the stage machine only advances on a
+                  # recognised answer, so off-topic speech re-anchors on the same question and escalates
+                  # to a person after MAX_REPEATS. Verified against the deployed function.
+                  "allowInterrupt": "false" if pending else "true",
               }
 
 
