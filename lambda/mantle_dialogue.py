@@ -1930,6 +1930,34 @@ SYMPATHETIC_TAG = '<emotion value="sympathetic"/>'
 SPEECH_TAGS_ENABLED = os.environ.get("SPEECH_TAGS_ENABLED", "true").lower() == "true"
 
 
+# Everything the voice engine treats as markup rather than words. The engine interprets
+# these, so anything reaching it must have been put there by this module on purpose.
+_MARKUP_RE = re.compile(r"<[^>]*>?|\[[^\]]*\]?")
+_RESIDUAL_BRACKETS_RE = re.compile(r"[<>\[\]]")
+
+
+def _strip_markup(text):
+    """Remove anything the voice engine would interpret instead of speaking.
+
+    The engine acts on <emotion>, <break>, <volume>, <spell> and the bare token
+    [laughter]. The message this wraps is model-generated from a caller's own words, so a
+    caller who successfully steers the model into emitting markup would otherwise have it
+    executed by the engine rather than read out: an angry or laughing delivery to someone
+    in financial hardship, or a sudden volume change. The classifier prompt does ask for
+    Thai text with commas as the only punctuation, but a prompt is guidance, not a
+    boundary, so the boundary is here.
+
+    Square brackets matter as much as angle brackets -- [laughter] needs no <> at all --
+    and an unterminated "<emotion" is stripped too, because the engine speaks the raw
+    fragment aloud when it cannot parse a tag. After the patterns are removed, any
+    residual bracket characters go as well: "<<emotion value=.../>>" leaves a stray ">"
+    behind once the inner tag is matched, and a loose bracket can still combine with
+    later text into something the engine tries to parse.
+    """
+    without_tags = _MARKUP_RE.sub(" ", str(text or ""))
+    return " ".join(_RESIDUAL_BRACKETS_RE.sub(" ", without_tags).split())
+
+
 def _for_speech(message, state):
     """Render a Thai prompt for the agentic voice engine.
 
@@ -1942,7 +1970,7 @@ def _for_speech(message, state):
     pausing, and the classifier prompt already requires a comma between offered options,
     which produces the pause. An explicit break there would be redundant markup.
     """
-    spoken = str(message or "")
+    spoken = _strip_markup(message)
     if spoken and SPEECH_TAGS_ENABLED and state.get("primarySignal") in SYMPATHETIC_SIGNALS:
         return SYMPATHETIC_TAG + spoken
     return spoken
@@ -2053,7 +2081,7 @@ def handler(event, context):
             **attributes,
             **_speech_tuning(state),
             "mantleState": json.dumps(state, ensure_ascii=False, separators=(",", ":")),
-            "nextPrompt": _compact(result["message"], 300),
+            "nextPrompt": _for_speech(_compact(result["message"], 300), state),
             "done": "true" if result.get("done") else "false",
             "modelUsed": "knowledge-base",
             "modelLatencyMs": "0",
