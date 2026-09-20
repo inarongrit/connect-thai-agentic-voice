@@ -8,11 +8,66 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import boto3
+import botocore.exceptions
 
 bedrock = boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
 LUNA_MODEL_ID = os.environ.get("LUNA_MODEL_ID", "us.openai.gpt-5.6-luna")
 TERRA_MODEL_ID = os.environ.get("TERRA_MODEL_ID", "us.openai.gpt-5.6-terra")
+
+# Cascade order: fastest, most reliable model leads; the other reviews it when the lead
+# is unconvinced. Measured in us-west-2 over 12-14 runs on the real classifier prompt:
+#
+#   us.openai.gpt-5.6-terra   p50  992 ms   valid JSON 12/12
+#   us.openai.gpt-5.6-luna    p50 1744 ms   valid JSON 11/12 clean, 9/12 hardship
+#
+# Leading with LUNA cost twice over: it was ~750 ms slower on a simple turn, and each of
+# its malformed replies fell through to a second full round trip for a reason unrelated
+# to confidence. Reordering keeps the same number of calls and the same confidence gate.
+# Re-run spike/bench_profiles.py before changing this; the ordering is measured, not
+# assumed, and the profile prefix (us. vs global.) made no measurable difference.
+CLASSIFIER_MODELS = (TERRA_MODEL_ID, LUNA_MODEL_ID)
+
+# The classifier's output contract, enforced by Bedrock instead of scraped out of prose.
+# Mirrors what the prompt already asks for. Constrains shape only -- the intent vocabulary
+# is still checked against ALLOWED_INTENTS, because a schema cannot express that.
+CLASSIFIER_SCHEMA = json.dumps({
+    "type": "object",
+    "properties": {
+        "intent": {"type": "string"},
+        "message": {"type": "string"},
+        "rawValue": {"type": "string"},
+        "confidence": {"type": "number"},
+    },
+    "required": ["intent", "message", "rawValue", "confidence"],
+    "additionalProperties": False,
+}, separators=(",", ":"))
+CLASSIFIER_OUTPUT_CONFIG = {
+    "textFormat": {
+        "type": "json_schema",
+        "structure": {
+            "jsonSchema": {"name": "turn_classification", "schema": CLASSIFIER_SCHEMA}
+        },
+    }
+}
+# Structured output is only available on the bedrock-runtime endpoint, which is what this
+# client targets. Tracked PER MODEL rather than as one global flag: the cascade calls two
+# models, and a single switch meant one model rejecting outputConfig would silently strip
+# it from the other for the life of the execution environment.
+_STRUCTURED_OUTPUT_DEFAULT = os.environ.get("CLASSIFIER_STRUCTURED_OUTPUT", "true").lower() == "true"
+_STRUCTURED_OUTPUT_BY_MODEL = {}
+
+
+def _structured_output_enabled(model_id):
+    return _STRUCTURED_OUTPUT_BY_MODEL.get(model_id, _STRUCTURED_OUTPUT_DEFAULT)
+
+# A ceiling, not a target, so headroom costs nothing on the turns that do not need it.
+# It was 220, which measurably truncated: LUNA spends 202-220 output tokens on this task
+# where TERRA spends ~50, and a sympathy reply to "สามีเพิ่งเสีย" came back with
+# stopReason=max_tokens and therefore unparseable half-written JSON. A truncated reply is
+# a dropped turn, so the cap has to clear the slowest model's normal output, not the
+# fastest model's.
+CLASSIFIER_MAX_TOKENS = int(os.environ.get("CLASSIFIER_MAX_TOKENS", "512"))
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "10"))
 POLICY_V2 = os.environ.get("NEGOTIATION_POLICY_V2", "true").lower() == "true"
 MAX_REPEATS = int(os.environ.get("MAX_REPEATS", "1"))
@@ -653,11 +708,25 @@ def _classifier_prompt(scenario, state, transcript, facts):
         "insurance": f"need_health, need_life, need_savings, appointment, declined, callback, product_question, human, unknown, {shared}",
         "broker": f"seminar, consultation, advice_request, declined, callback, human, unknown, {shared}",
     }
+    # Where two intents in a scenario read alike in Thai, say which is which. Measured:
+    # "อยากคุยกับผู้แนะนำการลงทุนค่ะ" ("I'd like to talk to an investment adviser") came
+    # back as human on 6/6 TERRA samples and 1/6 LUNA samples, which routes a caller who
+    # picked an offered option into a live-agent transfer instead of booking them. With
+    # this line both models scored 6/6, and a genuine agent request stayed human.
+    clarifications = {
+        "broker": (
+            "consultation means the caller wants to be introduced to or book time with an "
+            "investment adviser about investing; human means the caller wants to be "
+            "transferred to a live staff member now, or is unhappy, or asks for a person "
+            "generally. "
+        ),
+    }
     return (
         "You classify one Thai customer turn for a short financial-services call. "
         "Never invent a date, amount, need, or customer fact. Preserve rawValue exactly as a substring of the transcript. "
         "Return only one JSON object with keys intent, message, rawValue, confidence. "
         f"Allowed intents: {descriptions[scenario]}. confidence is 0 to 1. "
+        f"{clarifications.get(scenario, '')}"
         "message is one short natural Thai sentence in female register ending ค่ะ or คะ, with no Arabic digits. "
         "When the sentence offers choices, separate each option with a comma so the caller hears a pause, "
         "for example ต้องการความคุ้มครองด้านสุขภาพ, ชีวิต, หรือการออมคะ. A comma is the only punctuation allowed. "
@@ -679,16 +748,31 @@ def _extract_json(text):
 
 def _invoke(model_id, prompt):
     started = time.perf_counter()
-    response = bedrock.converse(
-        modelId=model_id,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 220},
-    )
+    request = {
+        "modelId": model_id,
+        "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        "inferenceConfig": {"maxTokens": CLASSIFIER_MAX_TOKENS},
+    }
+    if _structured_output_enabled(model_id):
+        request["outputConfig"] = CLASSIFIER_OUTPUT_CONFIG
+    try:
+        response = bedrock.converse(**request)
+    except botocore.exceptions.ClientError as error:
+        # A model or Region that will not take outputConfig rejects the whole request, so
+        # retrying per call would double the latency of every turn. Latch it off for this
+        # model only and carry on with prose parsing.
+        if "outputConfig" not in str(error) or not _structured_output_enabled(model_id):
+            raise
+        _STRUCTURED_OUTPUT_BY_MODEL[model_id] = False
+        request.pop("outputConfig")
+        response = bedrock.converse(**request)
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     text = "".join(
         block.get("text", "")
         for block in response.get("output", {}).get("message", {}).get("content", [])
     )
+    # Still parsed rather than trusted: a schema constrains the shape, not the intent
+    # vocabulary, and the prose path stays reachable when the latch above trips.
     result = _extract_json(text)
     return result, elapsed_ms
 
@@ -697,7 +781,7 @@ def _classify(scenario, state, transcript, facts):
     prompt = _classifier_prompt(scenario, state, transcript, facts)
     total_ms = 0
     errors = []
-    for model_id in (LUNA_MODEL_ID, TERRA_MODEL_ID):
+    for model_id in CLASSIFIER_MODELS:
         try:
             result, elapsed_ms = _invoke(model_id, prompt)
             total_ms += elapsed_ms
@@ -708,7 +792,9 @@ def _classify(scenario, state, transcript, facts):
                 raise ValueError("unsupported intent")
             if raw_value and raw_value not in transcript:
                 raise ValueError("raw value was not verbatim")
-            if confidence < 0.58 and model_id == LUNA_MODEL_ID:
+            # An unconvinced lead model escalates to the reviewer. Keyed on position, not
+            # on a model name, so reordering CLASSIFIER_MODELS cannot silently disable it.
+            if confidence < 0.58 and model_id != CLASSIFIER_MODELS[-1]:
                 continue
             return {
                 "intent": intent,
@@ -1789,6 +1875,119 @@ def _needs_model(scenario, state, transcript):
     return True
 
 
+# Advanced ASR end-of-turn tuning, recomputed every turn.
+#
+# The documented defaults are 0.7 confidence / 5000 ms silence, and AWS guidance is
+# explicit that a single aggressive global default is the wrong tool: it changes pacing
+# for every turn in the bot to fix one slot. The flow used to pin 1100 ms globally,
+# which cut off any caller who paused mid-utterance -- "วันที่... สิบห้า" is the common
+# case, because Thai speakers routinely pause before a numeral. These values are chosen
+# from the turn the caller is about to take instead, and the flow reads them back out of
+# the Lex session so the Lambda stays the single source of pacing.
+#
+# confidence is the primary lever; the silence timeout only applies when confidence has
+# not already ended the turn. Threshold must stay inside 0.5-0.9 or Lex rejects the
+# session attribute; timeout outside 500-10000 is silently clamped.
+EOT_CONFIRMATION = ("0.5", "7000")  # ใช่ / ไม่ใช่ -- see _speech_tuning for why 7000
+EOT_DICTATED = ("0.9", "7000")      # dates and amounts -- tolerate mid-utterance pauses
+EOT_DEFAULT = ("0.7", "5000")       # open-ended replies -- documented default pacing
+
+# Stages whose next caller utterance is dictated -- a date, a time, or an amount -- rather
+# than a choice or a free reply. These are the turns where a Thai speaker pauses
+# mid-utterance ("วันที่... สิบห้า"), so they get the tolerant threshold and timeout.
+#
+# Beware: stage names are inconsistent in this module. payment_amount is snake_case while
+# paymentDate, preferredTime and callbackTime are camelCase, so this set cannot be derived
+# by transforming field names. It is spelled out, and DictatedStageCoverageTest checks it
+# against the _ask_for prompt table so a new dictated prompt cannot be added without a
+# matching entry here.
+DICTATED_STAGES = {"payment_amount", "paymentDate", "preferredTime", "callbackTime"}
+# Pending readback fields that are themselves dictated, used when a caller rejects the
+# readback and restates the value on the same turn. Must stay in step with the dictated
+# prompts in _ask_for: callbackTime was missing here at first, so a caller restating a
+# callback time got the 800 ms yes/no timeout and was cut off mid-phrase.
+DICTATED_FIELDS = {"paymentDate", "paymentAmount", "preferredTime", "callbackTime"}
+
+
+# Signals where a sympathetic delivery matches the words being spoken. Emotion tags are
+# documented as beta and "work most reliably when the emotion matches the transcript", so
+# this is gated on the signal the dialogue already classified rather than set for a whole
+# call. do_not_contact is deliberately excluded: a caller asking to be left alone wants a
+# brief neutral acknowledgement, not sympathy.
+SYMPATHETIC_SIGNALS = {"hardship", "vulnerability", "complaint"}
+SYMPATHETIC_TAG = '<emotion value="sympathetic"/>'
+# Emotion tags are documented as a beta capability, and the engine speaks a tag it cannot
+# parse aloud rather than dropping it. Every documented example is English; there is no
+# stated guarantee for th-TH, and confirming it needs ears on a real call. So this is a
+# runtime switch, not a constant: if the Thai voice ever reads the markup out, disable it
+# in seconds without a redeploy or a code change.
+#
+#   aws lambda update-function-configuration --region us-west-2 \
+#     --function-name fsi-mantle-dialogue \
+#     --environment 'Variables={SPEECH_TAGS_ENABLED=false,...}'
+#
+# Turning it off returns the prompts to plain Thai, which is exactly what shipped before.
+SPEECH_TAGS_ENABLED = os.environ.get("SPEECH_TAGS_ENABLED", "true").lower() == "true"
+
+
+def _for_speech(message, state):
+    """Render a Thai prompt for the agentic voice engine.
+
+    Applied at the boundary on the way to the contact flow, so the dialogue logic keeps
+    reasoning in plain Thai and only the spoken form carries markup. The engine speaks a
+    malformed tag aloud instead of dropping it, so the tag is a complete literal and is
+    never assembled from fragments at runtime.
+
+    No <break> tags: AWS guidance is that natural punctuation should be the first tool for
+    pausing, and the classifier prompt already requires a comma between offered options,
+    which produces the pause. An explicit break there would be redundant markup.
+    """
+    spoken = str(message or "")
+    if spoken and SPEECH_TAGS_ENABLED and state.get("primarySignal") in SYMPATHETIC_SIGNALS:
+        return SYMPATHETIC_TAG + spoken
+    return spoken
+
+
+def _speech_tuning(state):
+    """ASR session attributes describing the caller turn that comes next.
+
+    Returned as plain attributes; the contact flow maps them onto the
+    x-amz-lex:audio:* namespace so that the scoping syntax stays in the flow.
+    """
+    pending = state.get("pending") or {}
+    if pending:
+        # A readback was just spoken, so the next utterance is ใช่ / ไม่ใช่. The threshold
+        # drops because the answer is one word and should end the turn immediately.
+        #
+        # The silence window does NOT drop, and this is the subtle part. end-timeout-ms
+        # measures silence AFTER the caller stops speaking -- it is not a cap on how long
+        # an utterance may be, so a longer Thai word never trips it. What trips it is a
+        # pause INSIDE a turn. A Thai caller who rejects a readback almost always appends
+        # the correction in the same turn, with a beat in between:
+        #
+        #     "ไม่ใช่ค่ะ ... วันที่ยี่สิบห้าค่ะ"     (No -- the twenty-fifth.)
+        #
+        # A short window ends the turn in that gap, the correction is discarded, and the
+        # bot re-asks a question the caller already answered. So confirmations keep the
+        # tolerant window and rely on confidence to end a plain ใช่ค่ะ promptly.
+        #
+        # Every field that can reach a readback is dictated, which PendingFieldCoverageTest
+        # pins, so there is deliberately no second branch here to drift out of step.
+        threshold, timeout = EOT_CONFIRMATION
+    elif state.get("stage") in DICTATED_STAGES:
+        threshold, timeout = EOT_DICTATED
+    else:
+        threshold, timeout = EOT_DEFAULT
+    return {
+        "eotThreshold": threshold,
+        "eotTimeoutMs": timeout,
+        # Barge-in defaults to true in Advanced ASR and that is what a natural
+        # conversation wants. It is emitted explicitly so a prompt that must be heard
+        # in full can turn it off per turn without a flow change.
+        "allowInterrupt": "true",
+    }
+
+
 def _lex_response(event, attributes):
     intent = event.get("sessionState", {}).get("intent", {}) or {}
     intent_name = intent.get("name") or "FallbackIntent"
@@ -1803,6 +2002,18 @@ def _lex_response(event, attributes):
 
 
 def handler(event, context):
+    # A scheduled ping keeps an execution environment alive and nothing more. It is
+    # answered before any event parsing so a warming invocation can never be mistaken for
+    # a caller turn. Cold starts were measured at ~1300 ms against a ~230 ms warm round
+    # trip, and because the demo is bursty that penalty lands on the opening turn of a
+    # call -- the most conspicuous place for the bot to stall. Provisioned concurrency
+    # would be the textbook fix, but Lex invokes this function by its unqualified ARN,
+    # which always resolves to $LATEST, and provisioned concurrency only attaches to a
+    # version or alias. Pointing Lex at an alias would mean every deploy needs a version
+    # publish and an alias move, and forgetting one would silently serve stale code.
+    if event.get("warmer") is True:
+        return {"warmed": True}
+
     # This function answers to two callers with different event shapes. Lex sends
     # sessionState.sessionAttributes; an Amazon Connect contact flow sends
     # Details.Parameters and expects a flat map of strings back. The profile lookup is
@@ -1840,6 +2051,7 @@ def handler(event, context):
         state["lastLatencyMs"] = 0
         return _lex_response(event, {key: str(value) for key, value in {
             **attributes,
+            **_speech_tuning(state),
             "mantleState": json.dumps(state, ensure_ascii=False, separators=(",", ":")),
             "nextPrompt": _compact(result["message"], 300),
             "done": "true" if result.get("done") else "false",
@@ -1907,8 +2119,9 @@ def handler(event, context):
     state["lastLatencyMs"] = classified.get("latencyMs", 0)
     output = {
         **attributes,
+        **_speech_tuning(state),
         "mantleState": json.dumps(state, ensure_ascii=False, separators=(",", ":")),
-        "nextPrompt": _compact(result["message"], 300),
+        "nextPrompt": _for_speech(_compact(result["message"], 300), state),
         "done": "true" if result.get("done") else "false",
         "modelUsed": str(state["lastModel"]),
         "modelLatencyMs": str(state["lastLatencyMs"]),

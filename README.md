@@ -152,6 +152,53 @@ python3 tools/cost_per_call.py --show-sources          # rate provenance
 Run both before publishing. There is no CI workflow here by choice; see
 CONTRIBUTING.md if you want the gate enforced automatically.
 
+## If something misbehaves on a live call
+
+Ordered fastest first. The first two need no redeploy.
+
+**The Thai voice reads markup aloud** (for example "emotion value sympathetic").
+Emotion tags are a documented beta capability with no stated `th-TH` guarantee,
+and the engine speaks a tag it cannot parse rather than dropping it. Turn them
+off; prompts revert to plain Thai:
+
+```bash
+aws lambda get-function-configuration --region us-west-2 \
+  --function-name fsi-mantle-dialogue --query Environment.Variables   # copy these first
+# then re-send the SAME map with SPEECH_TAGS_ENABLED=false --
+# --environment REPLACES the whole block, it does not merge.
+```
+
+Or redeploy the stack with no code change, which restores the declared default.
+
+**Callers are cut off mid-sentence, or the bot waits too long.** End-of-turn
+pacing is computed per turn in `_speech_tuning` and read by the flow out of the
+Lex session, so it is one Lambda change and no flow edit. Confidence is the
+primary lever; the silence timeout only applies when confidence has not already
+ended the turn.
+
+**Anything else.** Roll the stack back to the previous template:
+
+```bash
+aws cloudformation list-stack-instances --region us-west-2 2>/dev/null || true
+aws cloudformation describe-stack-events --region us-west-2 \
+  --stack-name fsi-mantle-experiment --max-items 20    # confirm what changed
+aws cloudformation cancel-update-stack --region us-west-2 \
+  --stack-name fsi-mantle-experiment                   # only while UPDATE_IN_PROGRESS
+```
+
+Once an update has completed, roll back by deploying the previous template
+revision through a change set — the same path used to deploy, reviewed before
+executing. Templates exceed the inline limit, so stage to S3 first and pass
+`UsePreviousValue=true` for every parameter so no `NoEcho` value is lost.
+
+**Validate after any change:**
+
+```bash
+python3 spike/validate_all_scenarios.py   # 24 multi-turn walks vs the deployed Lambda
+python3 spike/measure_deployed_turns.py   # which model answers, and how fast
+python3 spike/bench_profiles.py           # re-run if the model IDs change
+```
+
 ## Thai language reality
 
 Amazon Connect supports Thai for agentic voice and transcription, but not for

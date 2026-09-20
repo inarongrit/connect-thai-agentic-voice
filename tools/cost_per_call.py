@@ -81,8 +81,16 @@ LUNA_IN_PER_INVOCATION = LUNA_INPUT_TOKENS / LUNA_INVOCATIONS
 LUNA_OUT_PER_INVOCATION = LUNA_OUTPUT_TOKENS / LUNA_INVOCATIONS
 TERRA_IN_PER_INVOCATION = TERRA_INPUT_TOKENS / TERRA_INVOCATIONS
 TERRA_OUT_PER_INVOCATION = TERRA_OUTPUT_TOKENS / TERRA_INVOCATIONS
-LUNA_CALLS_PER_CALL = LUNA_INVOCATIONS / CALLS_OBSERVED      # model turns per call
-TERRA_FALLBACK_PER_CALL = TERRA_INVOCATIONS / CALLS_OBSERVED  # fallback turns per call
+# Total model turns per call, and how many of those escalated to the second model.
+# These counts describe the DIALOGUE, not which model served them, so they survive the
+# cascade reorder. Which model is primary does not: see dialogue_cost.
+#
+# The escalation rate was measured while Luna led, and Luna returned malformed JSON on
+# roughly 8-25% of turns, every one of which escalated. Terra now leads and returned
+# valid JSON on 12/12 sampled turns, so 0.44 is a conservative upper bound until a
+# fresh CloudWatch window is taken on the current code.
+MODEL_TURNS_PER_CALL = LUNA_INVOCATIONS / CALLS_OBSERVED
+ESCALATIONS_PER_CALL = TERRA_INVOCATIONS / CALLS_OBSERVED
 HAIKU_IN_PER_CALL = HAIKU_INPUT_TOKENS / CALLS_OBSERVED
 HAIKU_OUT_PER_CALL = HAIKU_OUTPUT_TOKENS / CALLS_OBSERVED
 
@@ -110,8 +118,11 @@ SERVERLESS_ASSUMED_PER_CALL = 0.002
 ASSUMPTIONS = (
     "Talk time is billed whole-minute-agnostic (linear per-minute, no rounding up).",
     "One outbound call per contact, no retries, no queue or agent handling time.",
-    f"Option A averages {LUNA_INVOCATIONS / CALLS_OBSERVED:.2f} Luna turns and "
-    f"{TERRA_INVOCATIONS / CALLS_OBSERVED:.2f} Terra fallback turns per call, as measured.",
+    f"Option A averages {MODEL_TURNS_PER_CALL:.2f} model turns per call, led by Terra, with "
+    f"{ESCALATIONS_PER_CALL:.2f} escalating to Luna. Turn counts are measured; the split "
+    "between models reflects the current cascade order, not the measured window, in which "
+    "Luna led. Terra costs ~5x Luna per invocation, so leading with it raises this line "
+    "~2.2x in exchange for roughly 750 ms off a simple turn.",
     "Dialogue prompts stay inside the 272K short-context tier (measured ~220 tokens).",
     f"Contact Lens post-contact analytics ASSUMED at {CONTACT_LENS_ASSUMED_FRACTION:.0%} of the "
     f"Connect AI minute rate (${CONTACT_LENS_ASSUMED_PER_MIN:.4f}/min) — no billed usage to measure.",
@@ -191,13 +202,18 @@ def dialogue_cost(engine: str, prices: Prices, model_turns: float, fallback_turn
             HAIKU_IN_PER_CALL / 1000 * prices.haiku_input_per_1k
             + HAIKU_OUT_PER_CALL / 1000 * prices.haiku_output_per_1k
         )
+    # The cascade leads with Terra and escalates to Luna -- see CLASSIFIER_MODELS in
+    # lambda/mantle_dialogue.py. Terra leads because it answers a simple turn in ~990 ms
+    # against Luna's ~1740 ms and returns valid JSON more reliably. It is also the more
+    # expensive model per token, so this reorder RAISES the dialogue line: roughly 2.2x,
+    # about +$0.00125 per call. That was a deliberate trade of cost for responsiveness.
     primary = model_turns * (
-        LUNA_IN_PER_INVOCATION / 1000 * prices.luna_input_per_1k
-        + LUNA_OUT_PER_INVOCATION / 1000 * prices.luna_output_per_1k
-    )
-    fallback = fallback_turns * (
         TERRA_IN_PER_INVOCATION / 1000 * prices.terra_input_per_1k
         + TERRA_OUT_PER_INVOCATION / 1000 * prices.terra_output_per_1k
+    )
+    fallback = fallback_turns * (
+        LUNA_IN_PER_INVOCATION / 1000 * prices.luna_input_per_1k
+        + LUNA_OUT_PER_INVOCATION / 1000 * prices.luna_output_per_1k
     )
     return primary + fallback
 
@@ -207,8 +223,8 @@ def estimate(
     channel: str = "pstn-th",
     engine: str = "mantle",
     prices: Prices | None = None,
-    model_turns: float = LUNA_CALLS_PER_CALL,
-    fallback_turns: float = TERRA_FALLBACK_PER_CALL,
+    model_turns: float = MODEL_TURNS_PER_CALL,
+    fallback_turns: float = ESCALATIONS_PER_CALL,
     translate_chars: float = TRANSLATE_CHARS_PER_CALL,
     sentiment_requests: float = SENTIMENT_REQUESTS_PER_CALL,
     post_call_analysis: bool = True,
@@ -315,10 +331,10 @@ def _sources() -> str:
             "  CloudWatch AWS/Bedrock, same window, over 95 Connect calls:",
             f"    Luna  {LUNA_INVOCATIONS} invocations, {LUNA_INPUT_TOKENS:,} in / {LUNA_OUTPUT_TOKENS:,} out",
             f"          → {LUNA_IN_PER_INVOCATION:.1f} in / {LUNA_OUT_PER_INVOCATION:.1f} out per turn,"
-            f" {LUNA_CALLS_PER_CALL:.2f} turns per call",
+            f" {MODEL_TURNS_PER_CALL:.2f} turns per call",
             f"    Terra {TERRA_INVOCATIONS} invocations, {TERRA_INPUT_TOKENS:,} in / {TERRA_OUTPUT_TOKENS:,} out",
             f"          → {TERRA_IN_PER_INVOCATION:.1f} in / {TERRA_OUT_PER_INVOCATION:.1f} out per turn,"
-            f" {TERRA_FALLBACK_PER_CALL:.2f} fallback turns per call"
+            f" {ESCALATIONS_PER_CALL:.2f} fallback turns per call"
             f" ({TERRA_INVOCATIONS / LUNA_INVOCATIONS:.0%} of primary turns)",
             f"    Haiku {HAIKU_INPUT_TOKENS:,} in / {HAIKU_OUTPUT_TOKENS:,} out"
             f" → {HAIKU_IN_PER_CALL:.0f} in / {HAIKU_OUT_PER_CALL:.0f} out per call (upper bound)",
@@ -345,10 +361,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--channel", default="pstn-th", choices=sorted(VOICE_RATES))
     parser.add_argument("--engine", default="mantle", choices=["mantle", "managed"],
                         help="mantle = Option A Luna/Terra, managed = Option B Haiku 4.5")
-    parser.add_argument("--model-turns", type=float, default=LUNA_CALLS_PER_CALL,
-                        help=f"Option A primary model turns per call (measured {LUNA_CALLS_PER_CALL:.2f})")
-    parser.add_argument("--fallback-turns", type=float, default=TERRA_FALLBACK_PER_CALL,
-                        help=f"Option A Terra fallback turns per call (measured {TERRA_FALLBACK_PER_CALL:.2f})")
+    parser.add_argument("--model-turns", type=float, default=MODEL_TURNS_PER_CALL,
+                        help=f"Option A primary model turns per call (measured {MODEL_TURNS_PER_CALL:.2f})")
+    parser.add_argument("--fallback-turns", type=float, default=ESCALATIONS_PER_CALL,
+                        help=f"Option A Luna escalation turns per call (measured {ESCALATIONS_PER_CALL:.2f})")
     parser.add_argument("--inference-option", default=DEFAULT_INFERENCE_OPTION,
                         choices=sorted(OPTION_A_PRICES_PER_1M),
                         help="Option A Bedrock inference option (default geo, matching the us.* model IDs)")

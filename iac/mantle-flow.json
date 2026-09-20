@@ -209,8 +209,9 @@
           "dueDate": "$.Attributes.dueDate",
           "mantleState": "{}",
           "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
-          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+          "x-amz-lex:audio:end-timeout-ms:*:*": "5000",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
+          "x-amz-lex:allow-interrupt:*:*": "true"
         }
       },
       "Transitions": {
@@ -266,8 +267,9 @@
           "dueDate": "$.Attributes.dueDate",
           "mantleState": "{}",
           "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
-          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+          "x-amz-lex:audio:end-timeout-ms:*:*": "5000",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
+          "x-amz-lex:allow-interrupt:*:*": "true"
         }
       },
       "Transitions": {
@@ -323,8 +325,9 @@
           "dueDate": "$.Attributes.dueDate",
           "mantleState": "{}",
           "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
-          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+          "x-amz-lex:audio:end-timeout-ms:*:*": "5000",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
+          "x-amz-lex:allow-interrupt:*:*": "true"
         }
       },
       "Transitions": {
@@ -379,9 +382,10 @@
           "amount": "$.Attributes.amount",
           "dueDate": "$.Attributes.dueDate",
           "mantleState": "$.Lex.SessionAttributes.mantleState",
-          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
-          "x-amz-lex:audio:start-timeout-ms:*:*": "6000"
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "$.Lex.SessionAttributes.eotThreshold",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "$.Lex.SessionAttributes.eotTimeoutMs",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
+          "x-amz-lex:allow-interrupt:*:*": "$.Lex.SessionAttributes.allowInterrupt"
         }
       },
       "Transitions": {

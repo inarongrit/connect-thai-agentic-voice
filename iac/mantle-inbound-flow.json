@@ -357,13 +357,14 @@
           "mode": "inbound_kb",
           "mantleState": "{}",
           "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "5000",
           "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
           "profileFound": "$.Attributes.profileFound",
           "profileAmount": "$.Attributes.profileAmount",
           "profileDueDate": "$.Attributes.profileDueDate",
           "profileFirstName": "$.Attributes.profileFirstName",
-          "verified": "$.Attributes.verified"
+          "verified": "$.Attributes.verified",
+          "x-amz-lex:allow-interrupt:*:*": "true"
         }
       },
       "Transitions": {
@@ -417,14 +418,15 @@
           "customerName": "$.Attributes.customerName",
           "mode": "inbound_kb",
           "mantleState": "$.Lex.SessionAttributes.mantleState",
-          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "1100",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "$.Lex.SessionAttributes.eotThreshold",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "$.Lex.SessionAttributes.eotTimeoutMs",
           "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
           "profileFound": "$.Attributes.profileFound",
           "profileAmount": "$.Attributes.profileAmount",
           "profileDueDate": "$.Attributes.profileDueDate",
           "profileFirstName": "$.Attributes.profileFirstName",
-          "verified": "$.Attributes.verified"
+          "verified": "$.Attributes.verified",
+          "x-amz-lex:allow-interrupt:*:*": "$.Lex.SessionAttributes.allowInterrupt"
         }
       },
       "Transitions": {
