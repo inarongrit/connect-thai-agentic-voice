@@ -53,10 +53,19 @@ class SpecificationMatchesTheEngineTests(unittest.TestCase):
             RULES["rules"]["protective_signal_routing"]["priority_order"],
             [name for name, _ in self.module.SIGNAL_PATTERNS])
 
+    # Outcomes that exist only outside collections. collections_rules.json documents the
+    # ACXD collections spike, so it should not claim to enumerate a retail outcome; the
+    # exclusion keeps this an equality check, so the collections spec still cannot drift.
+    NON_COLLECTIONS_OUTCOMES = frozenset({"return_inspection_referral"})
+
     def test_handoff_outcomes_match_the_engine(self):
         self.assertEqual(
             sorted(RULES["handoff_contract"]["outcomes_that_transfer"]),
-            sorted(self.module.HANDOFF_OUTCOMES))
+            sorted(self.module.HANDOFF_OUTCOMES - self.NON_COLLECTIONS_OUTCOMES))
+
+    def test_excluded_outcomes_really_are_in_the_engine(self):
+        # Guards the exclusion above from becoming a way to hide a typo.
+        self.assertTrue(self.NON_COLLECTIONS_OUTCOMES <= self.module.HANDOFF_OUTCOMES)
 
     def test_do_not_contact_is_recorded_as_not_transferring(self):
         """Honouring a contact ban means ending the call, not routing it to a person."""

@@ -24,7 +24,8 @@ import boto3
 lam = boto3.client("lambda", region_name="us-west-2")
 FUNCTION = "fsi-mantle-dialogue"
 
-DICTATED_STAGES = {"payment_amount", "paymentDate", "preferredTime", "callbackTime"}
+DICTATED_STAGES = {"payment_amount", "paymentDate", "preferredTime", "callbackTime",
+                   "deliveryDate"}
 KNOWN_TAGS = re.compile(r'^<(?:emotion value="(?:neutral|angry|excited|content|sad|scared|sympathetic)"'
                         r'|break time="\d+(?:ms|s)"|/?spell|volume ratio="[\d.]+")/?>$')
 FORBIDDEN_SPOKEN = "()[]{}*#_\"«»"
@@ -33,6 +34,9 @@ BASE = {
     "bank": {"customerName": "สมชาย", "amount": "15,500", "dueDate": "15 สิงหาคม 2569"},
     "insurance": {"customerName": "สุดา", "amount": "0", "dueDate": "-"},
     "broker": {"customerName": "อนุชา", "amount": "0", "dueDate": "-"},
+    # Retail reuses the same two attributes: amount is the order value and dueDate the
+    # scheduled delivery date, which is why a fourth vertical needed no flow change.
+    "retail": {"customerName": "มานี", "amount": "1,290", "dueDate": "15 สิงหาคม 2569"},
 }
 
 # Multi-turn walks. Each is (name, scenario, [utterances]).
@@ -64,6 +68,19 @@ WALKS = [
     ("broker consultation", "broker", ["ใช่ค่ะ", "อยากคุยกับผู้แนะนำการลงทุนค่ะ", "ใช่ค่ะ"]),
     ("broker advice request", "broker", ["ใช่ค่ะ", "ควรซื้อหุ้นตัวไหนดีคะ"]),
     ("broker retirement topic", "broker", ["ใช่ค่ะ", "สนใจสัมมนาค่ะ", "การวางแผนเกษียณค่ะ", "ใช่ค่ะ"]),
+    ("retail reschedule", "retail",
+     ["ขอเลื่อนวันจัดส่งค่ะ", "วันที่... ยี่สิบห้าค่ะ", "ใช่ค่ะ"]),
+    ("retail reschedule rejected", "retail",
+     ["ขอเลื่อนวันจัดส่งค่ะ", "วันที่ยี่สิบค่ะ", "ไม่ใช่ค่ะ", "วันที่ยี่สิบสองค่ะ", "ใช่ค่ะ"]),
+    ("retail track then close", "retail", ["ขอติดตามพัสดุค่ะ", "ไม่มีค่ะ"]),
+    ("retail track then reschedule", "retail",
+     ["พัสดุจะถึงเมื่อไหร่คะ", "ขอเลื่อนวันส่งค่ะ", "วันที่สิบแปดค่ะ", "ใช่ค่ะ"]),
+    ("retail return damaged", "retail", ["ขอคืนสินค้าค่ะ", "สินค้าเสียหายค่ะ"]),
+    ("retail return wrong item", "retail", ["ขอคืนสินค้าค่ะ", "ได้ของผิดรุ่นค่ะ"]),
+    ("retail return changed mind", "retail", ["ขอส่งคืนสินค้าค่ะ", "เปลี่ยนใจค่ะ"]),
+    ("retail human handoff", "retail", ["ขอคุยกับเจ้าหน้าที่ค่ะ"]),
+    ("retail complaint", "retail", ["ส่งช้ามาก บริการแย่ จะร้องเรียนค่ะ"]),
+    ("retail unclear then journey", "retail", ["เอ่อ...", "ขอคืนสินค้าค่ะ", "เปลี่ยนใจค่ะ"]),
     ("silence then filler", "bank", ["ใช่ค่ะ", "เอ่อ...", "อืม", "ไม่แน่ใจค่ะ"]),
     ("repeat request", "bank", ["ใช่ค่ะ", "ขอโทษ พูดอีกครั้งได้ไหมคะ"]),
 ]

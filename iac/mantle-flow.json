@@ -139,6 +139,15 @@
                 "broker"
               ]
             }
+          },
+          {
+            "NextAction": "intro-retail",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "retail"
+              ]
+            }
           }
         ]
       }
@@ -315,6 +324,81 @@
       "Type": "ConnectParticipantWithLexBot",
       "Parameters": {
         "Text": "คุณ $.Attributes.customerName สนใจรับรายละเอียดไหมคะ",
+        "LexV2Bot": {
+          "AliasArn": "${MantleLexAlias.Arn}"
+        },
+        "LexSessionAttributes": {
+          "scenario": "$.Attributes.scenario",
+          "customerName": "$.Attributes.customerName",
+          "amount": "$.Attributes.amount",
+          "dueDate": "$.Attributes.dueDate",
+          "mantleState": "{}",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "5000",
+          "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
+          "x-amz-lex:allow-interrupt:*:*": "true"
+        }
+      },
+      "Transitions": {
+        "NextAction": "route-result",
+        "Errors": [
+          {
+            "NextAction": "error-message",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "error-message",
+            "ErrorType": "NoMatchingCondition"
+          },
+          {
+            "NextAction": "error-message",
+            "ErrorType": "InputTimeLimitExceeded"
+          }
+        ],
+        "Conditions": [
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "FallbackIntent"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "MantleDialogue"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "intro-retail",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติจากฝ่ายบริการลูกค้าร้านค้าออนไลน์ค่ะ โทรมาเรื่องการจัดส่งสินค้าของคุณ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "input-retail",
+        "Errors": [
+          {
+            "NextAction": "input-retail",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "input-retail",
+      "Type": "ConnectParticipantWithLexBot",
+      "Parameters": {
+        "Text": "คุณ $.Attributes.customerName ต้องการเลื่อนวันจัดส่ง, ติดตามพัสดุ, หรือส่งคืนสินค้าคะ",
         "LexV2Bot": {
           "AliasArn": "${MantleLexAlias.Arn}"
         },
