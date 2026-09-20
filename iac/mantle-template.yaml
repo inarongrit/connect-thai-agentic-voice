@@ -2692,6 +2692,33 @@ Resources:
               - Effect: Allow
                 Action: polly:SynthesizeSpeech
                 Resource: '*'
+        - PolicyName: ConversationLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt MantleLexLogGroup.Arn
+
+  # Text transcripts of what Lex actually recognised, per turn. Without these a stalled call
+  # is undiagnosable: there is no way to tell whether ASR failed to transcribe the caller's
+  # Thai, or transcribed it correctly and the matchers did not recognise it. Those need
+  # opposite fixes, and two real calls stalled with no evidence either way.
+  #
+  # Text only, not audio. The transcript answers the question; recorded audio would put
+  # caller PII in a second store for no extra diagnostic value, and Contact Lens cannot
+  # redact Thai.
+  #
+  # Placed here deliberately: sync_inline_lambda.py owns the span from
+  # MantleDialogueFunction to MantleLexRole, so a resource added in that gap is deleted on
+  # the next sync.
+  MantleLexLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lex/${AWS::StackName}
+      RetentionInDays: 14
 
   MantleLexBot:
     Type: AWS::Lex::Bot
@@ -2747,6 +2774,13 @@ Resources:
               LambdaCodeHook:
                 CodeHookInterfaceVersion: '1.0'
                 LambdaArn: !GetAtt MantleDialogueFunction.Arn
+      ConversationLogSettings:
+        TextLogSettings:
+          - Enabled: true
+            Destination:
+              CloudWatch:
+                CloudWatchLogGroupArn: !GetAtt MantleLexLogGroup.Arn
+                LogPrefix: !Sub ${AWS::StackName}/
 
   MantleLexPermission:
     Type: AWS::Lambda::Permission
