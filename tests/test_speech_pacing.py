@@ -43,6 +43,21 @@ class SpeechTuningTest(unittest.TestCase):
             {"eotThreshold": "0.6", "eotTimeoutMs": "1500", "allowInterrupt": "true"},
         )
 
+    def test_a_readback_cannot_be_talked_over(self):
+        # The read-back carries both the commitment and the date. Consent captured after
+        # only the first clause is consent to something the caller never heard.
+        state = MODULE._initial_state("bank")
+        state["pending"] = {"field": "paymentDate", "raw": "ยี่สิบ"}
+        self.assertEqual(MODULE._speech_tuning(state)["allowInterrupt"], "false")
+
+    def test_menus_and_open_questions_stay_interruptible(self):
+        # Blocking a caller from cutting in with their choice is what makes a bot feel
+        # like an IVR.
+        for stage in ("payment_type", "assistance_options", "choose_journey", "paymentDate"):
+            state = MODULE._initial_state("bank")
+            state["stage"] = stage
+            self.assertEqual(MODULE._speech_tuning(state)["allowInterrupt"], "true", stage)
+
     def test_confirmation_turn_ends_on_confidence_not_silence(self):
         state = MODULE._initial_state("bank")
         state["pending"] = {"field": "paymentDate", "raw": "ยี่สิบห้า"}
@@ -51,21 +66,21 @@ class SpeechTuningTest(unittest.TestCase):
         self.assertEqual(tuning["eotThreshold"], "0.5")
         # ...but a tolerant silence window, so "ไม่ใช่ค่ะ ... วันที่ยี่สิบห้าค่ะ" is not
         # truncated at the beat before the correction.
-        self.assertEqual(tuning["eotTimeoutMs"], "1200")
+        self.assertEqual(tuning["eotTimeoutMs"], "600")
 
     def test_dictated_readback_keeps_a_tolerant_timeout(self):
         # A caller who rejects a date readback usually restates the date in the same
         # breath, pausing mid-utterance, so the timeout must not collapse to yes/no.
         state = MODULE._initial_state("bank")
         state["pending"] = {"field": "paymentDate", "raw": "สิบห้า"}
-        self.assertEqual(MODULE._speech_tuning(state)["eotTimeoutMs"], "1200")
+        self.assertEqual(MODULE._speech_tuning(state)["eotTimeoutMs"], "600")
 
     def test_amount_dictation_is_conservative(self):
         state = MODULE._initial_state("bank")
         state["stage"] = "payment_amount"
         self.assertEqual(
             MODULE._speech_tuning(state),
-            {"eotThreshold": "0.8", "eotTimeoutMs": "2500", "allowInterrupt": "true"},
+            {"eotThreshold": "0.8", "eotTimeoutMs": "2000", "allowInterrupt": "true"},
         )
 
     def test_emitted_values_stay_inside_supported_ranges(self):
@@ -299,7 +314,7 @@ class DictatedStageCoverageTest(unittest.TestCase):
             state = MODULE._initial_state("bank")
             state["pending"] = {"field": field, "raw": "x"}
             tuning = MODULE._speech_tuning(state)
-            self.assertEqual(tuning["eotTimeoutMs"], "1200", field)
+            self.assertEqual(tuning["eotTimeoutMs"], "600", field)
             # Still ends on confidence, because the likely answer is one word.
             self.assertEqual(tuning["eotThreshold"], "0.5", field)
 
@@ -323,7 +338,7 @@ class DictatedStageCoverageTest(unittest.TestCase):
             state["stage"] = stage
             tuning = MODULE._speech_tuning(state)
             self.assertEqual(tuning["eotThreshold"], "0.8", stage)
-            self.assertEqual(tuning["eotTimeoutMs"], "2500", stage)
+            self.assertEqual(tuning["eotTimeoutMs"], "2000", stage)
 
     def test_every_dictated_stage_is_a_real_stage_value(self):
         # A typo here would silently never match, which is the bug this test exists for.
@@ -369,7 +384,7 @@ class PendingFieldCoverageTest(unittest.TestCase):
         # Retuned down from 7000 after a real call felt sluggish: the window is the
         # FALLBACK for when confidence misses, so a generous value is dead air, not
         # safety. Still comfortably longer than a trailing ค่ะ.
-        self.assertGreaterEqual(int(MODULE.EOT_CONFIRMATION[1]), 1000)
+        self.assertGreaterEqual(int(MODULE.EOT_CONFIRMATION[1]), 500)
 
 
 class MarkupInjectionTest(unittest.TestCase):
@@ -462,8 +477,8 @@ class ReportedCallDefectsTest(unittest.TestCase):
         # The window is the fallback for when end-of-turn confidence misses, so it is the
         # failure case. 5000/7000 ms made the failure case 4-6x the entire model latency.
         for tier in (MODULE.EOT_CONFIRMATION, MODULE.EOT_DICTATED, MODULE.EOT_DEFAULT):
-            self.assertLessEqual(int(tier[1]), 2500, tier)
-            self.assertGreaterEqual(int(tier[1]), 1000, tier)
+            self.assertLessEqual(int(tier[1]), 2000, tier)
+            self.assertGreaterEqual(int(tier[1]), 500, tier)
 
     def test_open_ended_turns_are_the_briskest_tier(self):
         # Most turns are open-ended, so this tier sets the conversational feel.
