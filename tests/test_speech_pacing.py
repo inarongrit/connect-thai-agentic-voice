@@ -559,3 +559,58 @@ class ReportedCallDefectsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AsrDecomposedSaraAmTest(unittest.TestCase):
+    """Advanced ASR emits Thai SARA AM decomposed, and Unicode NFC does not fold it.
+
+    Strings here are the real transcript from a live call, recovered from Lex conversation
+    logs. "ขยาย เวลาชําระครับ" carries both quirks at once: an inserted space and the
+    decomposed ํา form. The two forms render identically, so this is invisible in a
+    transcript and in review.
+    """
+
+    DECOMPOSED = "\u0e4d\u0e32"
+    PRECOMPOSED = "\u0e33"
+
+    def decompose(self, text):
+        return text.replace(self.PRECOMPOSED, self.DECOMPOSED)
+
+    def test_the_two_forms_are_not_unicode_equivalent(self):
+        # If NFC folded these, no code change would have been needed. It does not.
+        import unicodedata
+
+        composed = f"ชำระ"
+        self.assertNotEqual(self.decompose(composed), composed)
+        self.assertEqual(
+            unicodedata.normalize("NFC", self.decompose(composed)),
+            self.decompose(composed),
+        )
+
+    def test_normalisation_folds_the_asr_form(self):
+        self.assertEqual(MODULE._normalise_thai(self.decompose("ชำระ")), "ชำระ")
+
+    def test_despace_also_normalises(self):
+        # Every regex in the module goes through _despace, so folding there covers them all.
+        self.assertEqual(MODULE._despace(self.decompose("ขยาย เวลาชำระ")), "ขยายเวลาชำระ")
+
+    def test_hardship_survives_the_asr_form(self):
+        # This one silently stopped matching: "ขอพักชำระ" is in the signal pattern and
+        # contains ำ, with no other alternative to catch it.
+        for text in ("ขอพักชำระครับ", "ขอลดค่างวดครับ"):
+            self.assertEqual(MODULE._detect_signal(self.decompose(text)), "hardship", text)
+
+    def test_matchers_survive_the_asr_form(self):
+        cases = {
+            "ชำระเต็มจำนวนครับ": ("_payment_type", "full"),
+            "ชำระบางส่วนครับ": ("_payment_type", "partial"),
+            "แบ่งชำระครับ": ("_payment_type", "installment"),
+            "ขยายเวลาชำระครับ": ("_assistance_plan", "extend_term"),
+            "พักชำระเงินต้นครับ": ("_assistance_plan", "principal_holiday"),
+        }
+        for text, (fn, expected) in cases.items():
+            matcher = getattr(MODULE, fn)
+            self.assertEqual(matcher(self.decompose(text)), expected, text)
+
+    def test_the_verbatim_turn_from_the_live_call_matches(self):
+        self.assertEqual(MODULE._assistance_plan("ขยาย เวลาชําระครับ"), "extend_term")
