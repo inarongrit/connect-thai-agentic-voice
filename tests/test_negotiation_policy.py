@@ -137,11 +137,22 @@ class SharedSignalTests(unittest.TestCase):
 
 
 class NoProgressGuardrailTests(unittest.TestCase):
-    def test_repeated_identical_prompt_escalates_instead_of_looping(self):
+    def test_a_persistent_stall_escalates_instead_of_looping(self):
+        # Escalation still happens; it just takes MAX_REPEATS stalled asks rather than one.
+        result = run("insurance", "อือ")
+        for _ in range(4):
+            if result["outcomeType"] == "unresolved_needs_human":
+                break
+            result = run("insurance", "อือ", result)
+        self.assertEqual(result["done"], "true")
+        self.assertEqual(result["outcomeType"], "unresolved_needs_human")
+
+    def test_the_first_stall_does_not_transfer(self):
+        # The defect this replaced: two consecutive real calls transferred with paymentType,
+        # paymentDate and paymentAmount all still unspecified.
         first = run("insurance", "อือ")
         second = run("insurance", "อือ", first)
-        self.assertEqual(second["done"], "true")
-        self.assertEqual(second["outcomeType"], "unresolved_needs_human")
+        self.assertNotEqual(second["outcomeType"], "unresolved_needs_human")
 
     def test_progress_resets_the_repeat_counter(self):
         first = run("bank", "ใช่ครับ ผมเอง")

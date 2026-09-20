@@ -70,7 +70,7 @@ def _structured_output_enabled(model_id):
 CLASSIFIER_MAX_TOKENS = int(os.environ.get("CLASSIFIER_MAX_TOKENS", "512"))
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "10"))
 POLICY_V2 = os.environ.get("NEGOTIATION_POLICY_V2", "true").lower() == "true"
-MAX_REPEATS = int(os.environ.get("MAX_REPEATS", "1"))
+MAX_REPEATS = int(os.environ.get("MAX_REPEATS", "3"))
 # Collections feedback: a caller who genuinely cannot pay was transferred straight to a
 # person, so the agent kept the easy calls and handed over every hard one. With this on,
 # it presents the named assistance options itself and only transfers when a person is
@@ -2329,6 +2329,26 @@ def _speech_tuning(state):
     }
 
 
+# Recovery wording, graded by attempt. Saying the identical sentence again is the least
+# useful thing to do when a caller was not understood: if the words did not land the first
+# time, or the ASR missed them, the same words will not land the second time either. Each
+# rung is shorter and more explicit than the last, because the likeliest causes are a long
+# prompt and an open-ended question.
+RECOVERY_LEAD_TH = {
+    1: "ขออภัยค่ะ ยังฟังไม่ชัดเจน ",
+    2: "ขออภัยค่ะ รบกวนตอบสั้น ๆ นะคะ ",
+}
+
+
+def _recovery_message(message, attempt):
+    """Prefix a re-ask so each attempt sounds like a fresh try, not a stuck recording."""
+    lead = RECOVERY_LEAD_TH.get(attempt, RECOVERY_LEAD_TH[2])
+    spoken = str(message or "").strip()
+    if not spoken:
+        return spoken
+    return lead + spoken
+
+
 def _lex_response(event, attributes):
     intent = event.get("sessionState", {}).get("intent", {}) or {}
     intent_name = intent.get("name") or "FallbackIntent"
@@ -2436,18 +2456,37 @@ def handler(event, context):
     if repeat_requested:
         state["noProgress"] = 0
     elif POLICY_V2 and not result.get("done"):
-        message = _compact(result.get("message"), 300)
-        stage = state.get("stage")
-        if message and message == state.get("lastMessage") and stage == state.get("lastStage"):
+        # Track WHAT is being asked, not the words used to ask it.
+        #
+        # This used to compare the rendered message, which created a trap: the only way to
+        # avoid escalating was to repeat the prompt verbatim, because any rewording reset the
+        # counter and the call could loop forever. So the recovery wording was frozen, and a
+        # caller who was not understood heard the identical Thai sentence back -- the least
+        # useful possible response -- and was then transferred.
+        #
+        # Keying on stage plus the pending field instead means the wording is free to vary
+        # between attempts while the counter still measures real progress. The legitimate
+        # date -> read-back step changes the key, so it correctly counts as progress even
+        # though the stage does not change.
+        ask_key = f"{state.get('stage')}:{(state.get('pending') or {}).get('field', '')}"
+        if ask_key == state.get("lastAskKey"):
             state["noProgress"] = int(state.get("noProgress", 0)) + 1
         else:
             state["noProgress"] = 0
-            state["lastMessage"] = message
-            state["lastStage"] = stage
-        if state["noProgress"] >= MAX_REPEATS:
-            state["outcomeDetail"] = "unresolved after repeated prompts"
+            state["lastAskKey"] = ask_key
+        state["lastMessage"] = _compact(result.get("message"), 300)
+        state["lastStage"] = state.get("stage")
+        attempt = state["noProgress"]
+        if attempt >= MAX_REPEATS:
+            state["outcomeDetail"] = f"unresolved after {attempt} re-prompts"
             result = _complete(state, "unresolved_needs_human",
                                "ขออภัยค่ะ " + HANDOFF_HOLD_TH)
+        elif attempt > 0:
+            # Graded recovery instead of one identical repeat then a transfer. Two calls in
+            # a row transferred with every slot still unspecified because the ladder had a
+            # single rung.
+            result = dict(result)
+            result["message"] = _recovery_message(result.get("message", ""), attempt)
     state["lastModel"] = classified.get("model", "deterministic")
     state["lastLatencyMs"] = classified.get("latencyMs", 0)
     output = {
