@@ -762,13 +762,36 @@ Resources:
               return " ".join(str(text or "").strip().split())[:limit]
 
 
+          # Advanced ASR emits SARA AM in decomposed form: NIKHAHIT + SARA AA (U+0E4D U+0E32)
+          # rather than the single U+0E33 that every pattern in this module is written with. The two
+          # render identically, so the difference is invisible in a transcript and in a code review,
+          # and Unicode NFC does NOT compose them -- Thai SARA AM is not canonically decomposable.
+          #
+          # The failure is silent and inconsistent. "ขอพักชำระ" in the hardship signal pattern stops
+          # matching entirely on ASR output, while "พักชำระเงินต้น" in the assistance matcher survives
+          # only because a different alternative in the same regex happens to catch it. Found from the
+          # first real Lex transcript: the caller said ขยาย เวลาชําระครับ and the ํา form was there.
+          #
+          # Normalising the input is the fix rather than rewriting every pattern, because a future
+          # pattern written the natural way would otherwise reintroduce it.
+          _SARA_AM_DECOMPOSED = "\u0e4d\u0e32"
+          _SARA_AM = "\u0e33"
+
+
+          def _normalise_thai(text):
+              """Fold ASR's decomposed SARA AM back to the precomposed form patterns use."""
+              return str(text or "").replace(_SARA_AM_DECOMPOSED, _SARA_AM)
+
+
           def _despace(text):
               """Remove whitespace so ASR word/vowel splitting cannot hide a signal.
 
               Advanced ASR returns turns such as "ตอนนี้ ไม่มี เงิน จ ่าย"; Thai has no
-              inter-word spaces, so stripping them is safe and makes matching reliable.
+              inter-query spaces, so stripping them is safe and makes matching reliable.
+              Also folds decomposed SARA AM, since both quirks come from the same recogniser and
+              every caller of this function is about to run a regex.
               """
-              return re.sub(r"\s+", "", str(text or ""))
+              return re.sub(r"\s+", "", _normalise_thai(text))
 
 
           def _is_yes(text):
