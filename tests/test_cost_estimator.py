@@ -29,8 +29,8 @@ class MeasuredRateTests(unittest.TestCase):
         self.assertAlmostEqual(COST.LUNA_IN_PER_INVOCATION, 33_583 / 152, places=4)
         self.assertAlmostEqual(COST.LUNA_OUT_PER_INVOCATION, 25_488 / 152, places=4)
         self.assertAlmostEqual(COST.TERRA_IN_PER_INVOCATION, 6_070 / 42, places=4)
-        self.assertAlmostEqual(COST.LUNA_CALLS_PER_CALL, 152 / 95, places=4)
-        self.assertAlmostEqual(COST.TERRA_FALLBACK_PER_CALL, 42 / 95, places=4)
+        self.assertAlmostEqual(COST.MODEL_TURNS_PER_CALL, 152 / 95, places=4)
+        self.assertAlmostEqual(COST.ESCALATIONS_PER_CALL, 42 / 95, places=4)
 
 
 class OptionAPublishedPriceTests(unittest.TestCase):
@@ -58,19 +58,23 @@ class OptionAPublishedPriceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             COST.Prices.for_option("lunar")
 
-    def test_terra_fallback_dominates_option_a_despite_fewer_turns(self):
-        """Terra is 10x Luna's price, so the 28% fallback rate carries most of the cost."""
+    def test_terra_lead_dominates_option_a(self):
+        """Terra leads every model turn and costs ~5x Luna, so it carries the line.
+
+        This is the cost side of the cascade reorder: Terra was chosen to lead on latency
+        and JSON reliability, and it is the expensive model, so the dialogue line went up.
+        """
         prices = COST.Prices.for_option("geo")
-        luna = COST.LUNA_CALLS_PER_CALL * (
-            COST.LUNA_IN_PER_INVOCATION / 1000 * prices.luna_input_per_1k
-            + COST.LUNA_OUT_PER_INVOCATION / 1000 * prices.luna_output_per_1k
-        )
-        terra = COST.TERRA_FALLBACK_PER_CALL * (
+        lead = COST.MODEL_TURNS_PER_CALL * (
             COST.TERRA_IN_PER_INVOCATION / 1000 * prices.terra_input_per_1k
             + COST.TERRA_OUT_PER_INVOCATION / 1000 * prices.terra_output_per_1k
         )
-        self.assertLess(COST.TERRA_FALLBACK_PER_CALL, COST.LUNA_CALLS_PER_CALL)
-        self.assertGreater(terra, luna)
+        escalation = COST.ESCALATIONS_PER_CALL * (
+            COST.LUNA_IN_PER_INVOCATION / 1000 * prices.luna_input_per_1k
+            + COST.LUNA_OUT_PER_INVOCATION / 1000 * prices.luna_output_per_1k
+        )
+        self.assertLess(COST.ESCALATIONS_PER_CALL, COST.MODEL_TURNS_PER_CALL)
+        self.assertGreater(lead, escalation)
 
     def test_option_a_is_cheaper_than_option_b_per_call(self):
         a = COST.estimate(3, "webrtc", "mantle")
@@ -92,13 +96,14 @@ class EstimateTests(unittest.TestCase):
         self.assertGreater(breakdown.voice / breakdown.total, 0.9)
 
     def test_option_a_dialogue_uses_measured_token_volume(self):
-        prices = COST.Prices(luna_input_per_1k=1.0, luna_output_per_1k=0.0,
-                             terra_input_per_1k=0.0, terra_output_per_1k=0.0)
+        # Terra leads, so pricing only Terra input isolates the lead-model share.
+        prices = COST.Prices(luna_input_per_1k=0.0, luna_output_per_1k=0.0,
+                             terra_input_per_1k=1.0, terra_output_per_1k=0.0)
         breakdown = COST.estimate(3, "webrtc", "mantle", prices)
-        expected = COST.LUNA_CALLS_PER_CALL * COST.LUNA_IN_PER_INVOCATION / 1000
+        expected = COST.MODEL_TURNS_PER_CALL * COST.TERRA_IN_PER_INVOCATION / 1000
         self.assertAlmostEqual(breakdown.dialogue, expected, places=8)
 
-    def test_option_a_includes_the_terra_fallback_share(self):
+    def test_option_a_includes_the_escalation_share(self):
         with_fallback = COST.estimate(3, "webrtc", "mantle")
         without = COST.estimate(3, "webrtc", "mantle", fallback_turns=0)
         self.assertGreater(with_fallback.dialogue, without.dialogue)

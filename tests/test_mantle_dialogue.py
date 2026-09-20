@@ -224,16 +224,51 @@ class MantleDialogueTests(unittest.TestCase):
             self.assertIn(expected, second["nextPrompt"], utterance)
             self.assertNotIn("ขอเป็น", second["nextPrompt"])
 
-    def test_invalid_luna_output_falls_back_to_terra(self):
+    def test_invalid_lead_model_output_falls_back_to_the_reviewer(self):
+        # The lead model returns a rawValue that is not in the transcript, which is
+        # rejected, so the reviewer's answer is the one that must come back. Written
+        # against CLASSIFIER_MODELS rather than a model name so that reordering the
+        # cascade cannot quietly invert what this test asserts.
+        lead, reviewer = MODULE.CLASSIFIER_MODELS
         responses = [
             ({"intent": "seminar", "message": "รับทราบค่ะ", "rawValue": "ข้อความที่ไม่มีจริง", "confidence": 0.9}, 400),
             ({"intent": "seminar", "message": "รับทราบค่ะ", "rawValue": "สัมมนา", "confidence": 0.9}, 500),
         ]
         with patch.object(MODULE, "_invoke", side_effect=responses):
             result = MODULE._classify("broker", MODULE._initial_state("broker"), "สนใจสัมมนา", {"customerName": "ลูกค้า"})
-        self.assertEqual(result["model"], MODULE.TERRA_MODEL_ID)
+        self.assertEqual(result["model"], reviewer)
+        self.assertNotEqual(result["model"], lead)
         self.assertEqual(result["latencyMs"], 900)
         self.assertEqual(result["rawValue"], "สัมมนา")
+
+    def test_terra_leads_the_cascade(self):
+        # Measured ordering: TERRA answers faster and returns valid JSON more reliably.
+        # Pinned so a future edit has to be deliberate about giving that up.
+        self.assertEqual(MODULE.CLASSIFIER_MODELS[0], MODULE.TERRA_MODEL_ID)
+        self.assertEqual(MODULE.CLASSIFIER_MODELS[-1], MODULE.LUNA_MODEL_ID)
+
+    def test_low_confidence_lead_escalates_to_the_reviewer(self):
+        lead, reviewer = MODULE.CLASSIFIER_MODELS
+        responses = [
+            ({"intent": "seminar", "message": "รับทราบค่ะ", "rawValue": "สัมมนา", "confidence": 0.4}, 300),
+            ({"intent": "seminar", "message": "รับทราบค่ะ", "rawValue": "สัมมนา", "confidence": 0.95}, 300),
+        ]
+        with patch.object(MODULE, "_invoke", side_effect=responses):
+            result = MODULE._classify("broker", MODULE._initial_state("broker"), "สนใจสัมมนา", {"customerName": "ลูกค้า"})
+        self.assertEqual(result["model"], reviewer)
+        self.assertEqual(result["confidence"], 0.95)
+
+    def test_confident_lead_answer_short_circuits(self):
+        # The point of the reorder: a confident lead answer costs exactly one call.
+        lead = MODULE.CLASSIFIER_MODELS[0]
+        responses = [
+            ({"intent": "seminar", "message": "รับทราบค่ะ", "rawValue": "สัมมนา", "confidence": 0.99}, 300),
+        ]
+        with patch.object(MODULE, "_invoke", side_effect=responses) as invoke:
+            result = MODULE._classify("broker", MODULE._initial_state("broker"), "สนใจสัมมนา", {"customerName": "ลูกค้า"})
+        self.assertEqual(result["model"], lead)
+        self.assertEqual(invoke.call_count, 1)
+        self.assertEqual(result["latencyMs"], 300)
 
 
 if __name__ == "__main__":

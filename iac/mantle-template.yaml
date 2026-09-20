@@ -44,6 +44,27 @@ Parameters:
       instance, and so no account-specific identifier lives in the repository.
     AllowedPattern: ^arn:aws:connect:[a-z0-9-]+:\d{12}:instance/[a-f0-9-]+/queue/[a-f0-9-]+$
 
+  WarmerEnabledParam:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Keeps one dialogue Lambda environment warm so the opening turn of a call is
+      not a cold start, which was measured at ~1300 ms against a ~230 ms warm
+      round trip. Set to false to pause the pings between demos.
+
+  WarmerIntervalMinutes:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    MaxValue: 60
+    Description: >-
+      Minutes between warming pings. Must stay below the idle window after which
+      Lambda reclaims the environment; four minutes is comfortably inside it.
+
+Conditions:
+  WarmerEnabled: !Equals [!Ref WarmerEnabledParam, 'true']
+
 Resources:
   MantleDialogueRole:
     Type: AWS::IAM::Role
@@ -115,6 +136,18 @@ Resources:
           KB_SCORE_FLOOR: '0.48'
           ASSISTANCE_PROGRAM: !Ref AssistanceProgram
           PROFILE_DOMAIN: !Ref CustomerProfilesDomain
+          # Emotion tags are a documented beta capability and the engine speaks a tag it
+          # cannot parse aloud rather than dropping it. th-TH support is not stated and
+          # can only be confirmed by listening to a call, so the switch is declared here
+          # to be flipped without a code change if the Thai voice reads the markup out.
+          SPEECH_TAGS_ENABLED: 'true'
+          # Raised from 220 after measuring stopReason=max_tokens on a Thai sympathy
+          # reply: LUNA spends 202-220 output tokens where TERRA spends ~50, and a
+          # truncated reply is unparseable JSON, which is a dropped turn.
+          CLASSIFIER_MAX_TOKENS: '512'
+          # Structured outputs are bedrock-runtime only. The Lambda latches this off by
+          # itself if the service ever rejects outputConfig.
+          CLASSIFIER_STRUCTURED_OUTPUT: 'true'
       Code:
         ZipFile: |
           """Feature-flagged Thai dialogue engine using GPT-5.6 on Amazon Bedrock."""
@@ -127,11 +160,66 @@ Resources:
           from datetime import datetime, timedelta, timezone
 
           import boto3
+          import botocore.exceptions
 
           bedrock = boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
           LUNA_MODEL_ID = os.environ.get("LUNA_MODEL_ID", "us.openai.gpt-5.6-luna")
           TERRA_MODEL_ID = os.environ.get("TERRA_MODEL_ID", "us.openai.gpt-5.6-terra")
+
+          # Cascade order: fastest, most reliable model leads; the other reviews it when the lead
+          # is unconvinced. Measured in us-west-2 over 12-14 runs on the real classifier prompt:
+          #
+          #   us.openai.gpt-5.6-terra   p50  992 ms   valid JSON 12/12
+          #   us.openai.gpt-5.6-luna    p50 1744 ms   valid JSON 11/12 clean, 9/12 hardship
+          #
+          # Leading with LUNA cost twice over: it was ~750 ms slower on a simple turn, and each of
+          # its malformed replies fell through to a second full round trip for a reason unrelated
+          # to confidence. Reordering keeps the same number of calls and the same confidence gate.
+          # Re-run spike/bench_profiles.py before changing this; the ordering is measured, not
+          # assumed, and the profile prefix (us. vs global.) made no measurable difference.
+          CLASSIFIER_MODELS = (TERRA_MODEL_ID, LUNA_MODEL_ID)
+
+          # The classifier's output contract, enforced by Bedrock instead of scraped out of prose.
+          # Mirrors what the prompt already asks for. Constrains shape only -- the intent vocabulary
+          # is still checked against ALLOWED_INTENTS, because a schema cannot express that.
+          CLASSIFIER_SCHEMA = json.dumps({
+              "type": "object",
+              "properties": {
+                  "intent": {"type": "string"},
+                  "message": {"type": "string"},
+                  "rawValue": {"type": "string"},
+                  "confidence": {"type": "number"},
+              },
+              "required": ["intent", "message", "rawValue", "confidence"],
+              "additionalProperties": False,
+          }, separators=(",", ":"))
+          CLASSIFIER_OUTPUT_CONFIG = {
+              "textFormat": {
+                  "type": "json_schema",
+                  "structure": {
+                      "jsonSchema": {"name": "turn_classification", "schema": CLASSIFIER_SCHEMA}
+                  },
+              }
+          }
+          # Structured output is only available on the bedrock-runtime endpoint, which is what this
+          # client targets. Tracked PER MODEL rather than as one global flag: the cascade calls two
+          # models, and a single switch meant one model rejecting outputConfig would silently strip
+          # it from the other for the life of the execution environment.
+          _STRUCTURED_OUTPUT_DEFAULT = os.environ.get("CLASSIFIER_STRUCTURED_OUTPUT", "true").lower() == "true"
+          _STRUCTURED_OUTPUT_BY_MODEL = {}
+
+
+          def _structured_output_enabled(model_id):
+              return _STRUCTURED_OUTPUT_BY_MODEL.get(model_id, _STRUCTURED_OUTPUT_DEFAULT)
+
+          # A ceiling, not a target, so headroom costs nothing on the turns that do not need it.
+          # It was 220, which measurably truncated: LUNA spends 202-220 output tokens on this task
+          # where TERRA spends ~50, and a sympathy reply to "สามีเพิ่งเสีย" came back with
+          # stopReason=max_tokens and therefore unparseable half-written JSON. A truncated reply is
+          # a dropped turn, so the cap has to clear the slowest model's normal output, not the
+          # fastest model's.
+          CLASSIFIER_MAX_TOKENS = int(os.environ.get("CLASSIFIER_MAX_TOKENS", "512"))
           MAX_TURNS = int(os.environ.get("MAX_TURNS", "10"))
           POLICY_V2 = os.environ.get("NEGOTIATION_POLICY_V2", "true").lower() == "true"
           MAX_REPEATS = int(os.environ.get("MAX_REPEATS", "1"))
@@ -772,11 +860,25 @@ Resources:
                   "insurance": f"need_health, need_life, need_savings, appointment, declined, callback, product_question, human, unknown, {shared}",
                   "broker": f"seminar, consultation, advice_request, declined, callback, human, unknown, {shared}",
               }
+              # Where two intents in a scenario read alike in Thai, say which is which. Measured:
+              # "อยากคุยกับผู้แนะนำการลงทุนค่ะ" ("I'd like to talk to an investment adviser") came
+              # back as human on 6/6 TERRA samples and 1/6 LUNA samples, which routes a caller who
+              # picked an offered option into a live-agent transfer instead of booking them. With
+              # this line both models scored 6/6, and a genuine agent request stayed human.
+              clarifications = {
+                  "broker": (
+                      "consultation means the caller wants to be introduced to or book time with an "
+                      "investment adviser about investing; human means the caller wants to be "
+                      "transferred to a live staff member now, or is unhappy, or asks for a person "
+                      "generally. "
+                  ),
+              }
               return (
                   "You classify one Thai customer turn for a short financial-services call. "
                   "Never invent a date, amount, need, or customer fact. Preserve rawValue exactly as a substring of the transcript. "
                   "Return only one JSON object with keys intent, message, rawValue, confidence. "
                   f"Allowed intents: {descriptions[scenario]}. confidence is 0 to 1. "
+                  f"{clarifications.get(scenario, '')}"
                   "message is one short natural Thai sentence in female register ending ค่ะ or คะ, with no Arabic digits. "
                   "When the sentence offers choices, separate each option with a comma so the caller hears a pause, "
                   "for example ต้องการความคุ้มครองด้านสุขภาพ, ชีวิต, หรือการออมคะ. A comma is the only punctuation allowed. "
@@ -798,16 +900,31 @@ Resources:
 
           def _invoke(model_id, prompt):
               started = time.perf_counter()
-              response = bedrock.converse(
-                  modelId=model_id,
-                  messages=[{"role": "user", "content": [{"text": prompt}]}],
-                  inferenceConfig={"maxTokens": 220},
-              )
+              request = {
+                  "modelId": model_id,
+                  "messages": [{"role": "user", "content": [{"text": prompt}]}],
+                  "inferenceConfig": {"maxTokens": CLASSIFIER_MAX_TOKENS},
+              }
+              if _structured_output_enabled(model_id):
+                  request["outputConfig"] = CLASSIFIER_OUTPUT_CONFIG
+              try:
+                  response = bedrock.converse(**request)
+              except botocore.exceptions.ClientError as error:
+                  # A model or Region that will not take outputConfig rejects the whole request, so
+                  # retrying per call would double the latency of every turn. Latch it off for this
+                  # model only and carry on with prose parsing.
+                  if "outputConfig" not in str(error) or not _structured_output_enabled(model_id):
+                      raise
+                  _STRUCTURED_OUTPUT_BY_MODEL[model_id] = False
+                  request.pop("outputConfig")
+                  response = bedrock.converse(**request)
               elapsed_ms = round((time.perf_counter() - started) * 1000)
               text = "".join(
                   block.get("text", "")
                   for block in response.get("output", {}).get("message", {}).get("content", [])
               )
+              # Still parsed rather than trusted: a schema constrains the shape, not the intent
+              # vocabulary, and the prose path stays reachable when the latch above trips.
               result = _extract_json(text)
               return result, elapsed_ms
 
@@ -816,7 +933,7 @@ Resources:
               prompt = _classifier_prompt(scenario, state, transcript, facts)
               total_ms = 0
               errors = []
-              for model_id in (LUNA_MODEL_ID, TERRA_MODEL_ID):
+              for model_id in CLASSIFIER_MODELS:
                   try:
                       result, elapsed_ms = _invoke(model_id, prompt)
                       total_ms += elapsed_ms
@@ -827,7 +944,9 @@ Resources:
                           raise ValueError("unsupported intent")
                       if raw_value and raw_value not in transcript:
                           raise ValueError("raw value was not verbatim")
-                      if confidence < 0.58 and model_id == LUNA_MODEL_ID:
+                      # An unconvinced lead model escalates to the reviewer. Keyed on position, not
+                      # on a model name, so reordering CLASSIFIER_MODELS cannot silently disable it.
+                      if confidence < 0.58 and model_id != CLASSIFIER_MODELS[-1]:
                           continue
                       return {
                           "intent": intent,
@@ -1908,6 +2027,119 @@ Resources:
               return True
 
 
+          # Advanced ASR end-of-turn tuning, recomputed every turn.
+          #
+          # The documented defaults are 0.7 confidence / 5000 ms silence, and AWS guidance is
+          # explicit that a single aggressive global default is the wrong tool: it changes pacing
+          # for every turn in the bot to fix one slot. The flow used to pin 1100 ms globally,
+          # which cut off any caller who paused mid-utterance -- "วันที่... สิบห้า" is the common
+          # case, because Thai speakers routinely pause before a numeral. These values are chosen
+          # from the turn the caller is about to take instead, and the flow reads them back out of
+          # the Lex session so the Lambda stays the single source of pacing.
+          #
+          # confidence is the primary lever; the silence timeout only applies when confidence has
+          # not already ended the turn. Threshold must stay inside 0.5-0.9 or Lex rejects the
+          # session attribute; timeout outside 500-10000 is silently clamped.
+          EOT_CONFIRMATION = ("0.5", "7000")  # ใช่ / ไม่ใช่ -- see _speech_tuning for why 7000
+          EOT_DICTATED = ("0.9", "7000")      # dates and amounts -- tolerate mid-utterance pauses
+          EOT_DEFAULT = ("0.7", "5000")       # open-ended replies -- documented default pacing
+
+          # Stages whose next caller utterance is dictated -- a date, a time, or an amount -- rather
+          # than a choice or a free reply. These are the turns where a Thai speaker pauses
+          # mid-utterance ("วันที่... สิบห้า"), so they get the tolerant threshold and timeout.
+          #
+          # Beware: stage names are inconsistent in this module. payment_amount is snake_case while
+          # paymentDate, preferredTime and callbackTime are camelCase, so this set cannot be derived
+          # by transforming field names. It is spelled out, and DictatedStageCoverageTest checks it
+          # against the _ask_for prompt table so a new dictated prompt cannot be added without a
+          # matching entry here.
+          DICTATED_STAGES = {"payment_amount", "paymentDate", "preferredTime", "callbackTime"}
+          # Pending readback fields that are themselves dictated, used when a caller rejects the
+          # readback and restates the value on the same turn. Must stay in step with the dictated
+          # prompts in _ask_for: callbackTime was missing here at first, so a caller restating a
+          # callback time got the 800 ms yes/no timeout and was cut off mid-phrase.
+          DICTATED_FIELDS = {"paymentDate", "paymentAmount", "preferredTime", "callbackTime"}
+
+
+          # Signals where a sympathetic delivery matches the words being spoken. Emotion tags are
+          # documented as beta and "work most reliably when the emotion matches the transcript", so
+          # this is gated on the signal the dialogue already classified rather than set for a whole
+          # call. do_not_contact is deliberately excluded: a caller asking to be left alone wants a
+          # brief neutral acknowledgement, not sympathy.
+          SYMPATHETIC_SIGNALS = {"hardship", "vulnerability", "complaint"}
+          SYMPATHETIC_TAG = '<emotion value="sympathetic"/>'
+          # Emotion tags are documented as a beta capability, and the engine speaks a tag it cannot
+          # parse aloud rather than dropping it. Every documented example is English; there is no
+          # stated guarantee for th-TH, and confirming it needs ears on a real call. So this is a
+          # runtime switch, not a constant: if the Thai voice ever reads the markup out, disable it
+          # in seconds without a redeploy or a code change.
+          #
+          #   aws lambda update-function-configuration --region us-west-2 \
+          #     --function-name fsi-mantle-dialogue \
+          #     --environment 'Variables={SPEECH_TAGS_ENABLED=false,...}'
+          #
+          # Turning it off returns the prompts to plain Thai, which is exactly what shipped before.
+          SPEECH_TAGS_ENABLED = os.environ.get("SPEECH_TAGS_ENABLED", "true").lower() == "true"
+
+
+          def _for_speech(message, state):
+              """Render a Thai prompt for the agentic voice engine.
+
+              Applied at the boundary on the way to the contact flow, so the dialogue logic keeps
+              reasoning in plain Thai and only the spoken form carries markup. The engine speaks a
+              malformed tag aloud instead of dropping it, so the tag is a complete literal and is
+              never assembled from fragments at runtime.
+
+              No <break> tags: AWS guidance is that natural punctuation should be the first tool for
+              pausing, and the classifier prompt already requires a comma between offered options,
+              which produces the pause. An explicit break there would be redundant markup.
+              """
+              spoken = str(message or "")
+              if spoken and SPEECH_TAGS_ENABLED and state.get("primarySignal") in SYMPATHETIC_SIGNALS:
+                  return SYMPATHETIC_TAG + spoken
+              return spoken
+
+
+          def _speech_tuning(state):
+              """ASR session attributes describing the caller turn that comes next.
+
+              Returned as plain attributes; the contact flow maps them onto the
+              x-amz-lex:audio:* namespace so that the scoping syntax stays in the flow.
+              """
+              pending = state.get("pending") or {}
+              if pending:
+                  # A readback was just spoken, so the next utterance is ใช่ / ไม่ใช่. The threshold
+                  # drops because the answer is one word and should end the turn immediately.
+                  #
+                  # The silence window does NOT drop, and this is the subtle part. end-timeout-ms
+                  # measures silence AFTER the caller stops speaking -- it is not a cap on how long
+                  # an utterance may be, so a longer Thai word never trips it. What trips it is a
+                  # pause INSIDE a turn. A Thai caller who rejects a readback almost always appends
+                  # the correction in the same turn, with a beat in between:
+                  #
+                  #     "ไม่ใช่ค่ะ ... วันที่ยี่สิบห้าค่ะ"     (No -- the twenty-fifth.)
+                  #
+                  # A short window ends the turn in that gap, the correction is discarded, and the
+                  # bot re-asks a question the caller already answered. So confirmations keep the
+                  # tolerant window and rely on confidence to end a plain ใช่ค่ะ promptly.
+                  #
+                  # Every field that can reach a readback is dictated, which PendingFieldCoverageTest
+                  # pins, so there is deliberately no second branch here to drift out of step.
+                  threshold, timeout = EOT_CONFIRMATION
+              elif state.get("stage") in DICTATED_STAGES:
+                  threshold, timeout = EOT_DICTATED
+              else:
+                  threshold, timeout = EOT_DEFAULT
+              return {
+                  "eotThreshold": threshold,
+                  "eotTimeoutMs": timeout,
+                  # Barge-in defaults to true in Advanced ASR and that is what a natural
+                  # conversation wants. It is emitted explicitly so a prompt that must be heard
+                  # in full can turn it off per turn without a flow change.
+                  "allowInterrupt": "true",
+              }
+
+
           def _lex_response(event, attributes):
               intent = event.get("sessionState", {}).get("intent", {}) or {}
               intent_name = intent.get("name") or "FallbackIntent"
@@ -1922,6 +2154,18 @@ Resources:
 
 
           def handler(event, context):
+              # A scheduled ping keeps an execution environment alive and nothing more. It is
+              # answered before any event parsing so a warming invocation can never be mistaken for
+              # a caller turn. Cold starts were measured at ~1300 ms against a ~230 ms warm round
+              # trip, and because the demo is bursty that penalty lands on the opening turn of a
+              # call -- the most conspicuous place for the bot to stall. Provisioned concurrency
+              # would be the textbook fix, but Lex invokes this function by its unqualified ARN,
+              # which always resolves to $LATEST, and provisioned concurrency only attaches to a
+              # version or alias. Pointing Lex at an alias would mean every deploy needs a version
+              # publish and an alias move, and forgetting one would silently serve stale code.
+              if event.get("warmer") is True:
+                  return {"warmed": True}
+
               # This function answers to two callers with different event shapes. Lex sends
               # sessionState.sessionAttributes; an Amazon Connect contact flow sends
               # Details.Parameters and expects a flat map of strings back. The profile lookup is
@@ -1959,6 +2203,7 @@ Resources:
                   state["lastLatencyMs"] = 0
                   return _lex_response(event, {key: str(value) for key, value in {
                       **attributes,
+                      **_speech_tuning(state),
                       "mantleState": json.dumps(state, ensure_ascii=False, separators=(",", ":")),
                       "nextPrompt": _compact(result["message"], 300),
                       "done": "true" if result.get("done") else "false",
@@ -2026,8 +2271,9 @@ Resources:
               state["lastLatencyMs"] = classified.get("latencyMs", 0)
               output = {
                   **attributes,
+                  **_speech_tuning(state),
                   "mantleState": json.dumps(state, ensure_ascii=False, separators=(",", ":")),
-                  "nextPrompt": _compact(result["message"], 300),
+                  "nextPrompt": _for_speech(_compact(result["message"], 300), state),
                   "done": "true" if result.get("done") else "false",
                   "modelUsed": str(state["lastModel"]),
                   "modelLatencyMs": str(state["lastLatencyMs"]),
@@ -2134,6 +2380,35 @@ Resources:
       Principal: lexv2.amazonaws.com
       SourceArn: !GetAtt MantleLexAlias.Arn
 
+  # Cold starts were measured at ~1300 ms against a ~230 ms warm round trip. Because the
+  # demo is bursty, that penalty lands on the opening turn of a call. A ping every four
+  # minutes holds an execution environment open. Provisioned concurrency is the textbook
+  # fix but cannot be used here: Lex invokes the function by its unqualified ARN, which
+  # resolves to $LATEST, and provisioned concurrency only attaches to a version or alias.
+  #
+  # Parameterised so it can be paused between demos without editing the template. One
+  # environment stays warm, which suits a single-call demo; concurrent calls would still
+  # cold-start the second contact.
+  MantleDialogueWarmerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AWS::StackName}-dialogue-warmer'
+      Description: Keeps the Thai dialogue Lambda warm so the first turn of a call is not a cold start.
+      ScheduleExpression: !Sub 'rate(${WarmerIntervalMinutes} minutes)'
+      State: !If [WarmerEnabled, ENABLED, DISABLED]
+      Targets:
+        - Id: dialogue
+          Arn: !GetAtt MantleDialogueFunction.Arn
+          Input: '{"warmer": true}'
+
+  MantleDialogueWarmerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MantleDialogueFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MantleDialogueWarmerRule.Arn
+
   MantleConnectPermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -2190,7 +2465,7 @@ Resources:
       InstanceArn: !Ref ConnectInstanceArn
       Type: CONTACT_FLOW
       Content: !Sub |
-        {"Version":"2019-10-30","StartAction":"logging","Metadata":{"entryPointPosition":{"x":20,"y":20},"snapToGrid":false,"name":"FSI Mantle Experimental Flow","description":"Feature-flagged Thai Luna/Terra dialogue path","type":"contactFlow","status":"published","ActionMetadata":{"contact-lens-analytics":{"position":{"x":120,"y":230}}}},"Actions":[{"Identifier":"logging","Type":"UpdateFlowLoggingBehavior","Parameters":{"FlowLoggingBehavior":"Enabled"},"Transitions":{"NextAction":"contact-lens-analytics","Errors":[],"Conditions":[]}},{"Identifier":"contact-lens-analytics","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"},"AnalyticsBehavior":{"Enabled":"True","AnalyticsLanguage":"th-TH","ChannelConfiguration":{"Voice":{"AnalyticsModes":["RealTime","AutomatedInteraction"]}}}},"Transitions":{"NextAction":"set-voice","Errors":[],"Conditions":[]}},{"Identifier":"set-voice","Type":"UpdateContactTextToSpeechVoice","Parameters":{"TextToSpeechVoice":"SUDA","TextToSpeechEngine":"connect:agentic"},"Transitions":{"NextAction":"set-language","Errors":[{"NextAction":"set-language","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"set-language","Type":"UpdateContactData","Parameters":{"LanguageCode":"th-TH"},"Transitions":{"NextAction":"scenario-branch","Errors":[{"NextAction":"scenario-branch","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"scenario-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Attributes.scenario"},"Transitions":{"NextAction":"intro-bank","Errors":[{"NextAction":"intro-bank","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"intro-bank","Condition":{"Operator":"Equals","Operands":["bank"]}},{"NextAction":"intro-insurance","Condition":{"Operator":"Equals","Operands":["insurance"]}},{"NextAction":"intro-broker","Condition":{"Operator":"Equals","Operands":["broker"]}}]}},{"Identifier":"intro-bank","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันโทรมาจากฝ่ายบริการลูกค้าของธนาคารนะคะ"},"Transitions":{"NextAction":"input-bank","Errors":[{"NextAction":"input-bank","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"intro-insurance","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของบริษัทประกันค่ะ โทรมาเพื่อนำเสนอข้อมูลแผนความคุ้มครอง การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการค่ะ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต หากสนใจจะให้เจ้าหน้าที่ผู้ได้รับอนุญาตติดต่อกลับค่ะ"},"Transitions":{"NextAction":"input-insurance","Errors":[{"NextAction":"input-insurance","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"intro-broker","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของบริษัทหลักทรัพย์ค่ะ โทรมาแจ้งข้อมูลสัมมนาการลงทุน ไม่ใช่การให้คำแนะนำการลงทุนค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ และผู้แนะนำการลงทุนที่ได้รับอนุญาตจะเป็นผู้ดูแลรายละเอียดค่ะ"},"Transitions":{"NextAction":"input-broker","Errors":[{"NextAction":"input-broker","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"input-bank","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"ไม่ทราบว่ากำลังเรียนสายคุณ $.Attributes.customerName อยู่หรือเปล่าคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"input-insurance","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"คุณ $.Attributes.customerName สะดวกคุยสักครู่ไหมคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"input-broker","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"คุณ $.Attributes.customerName สนใจรับรายละเอียดไหมคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"input-resume","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"$.Lex.SessionAttributes.mantleState","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"route-result","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.done"},"Transitions":{"NextAction":"input-resume","Errors":[{"NextAction":"input-resume","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"closing-message","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"closing-message","Type":"MessageParticipant","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt"},"Transitions":{"NextAction":"record-outcome","Errors":[{"NextAction":"record-outcome","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"record-outcome","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunctionArn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","scenario":"$.Attributes.scenario","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail","paymentType":"$.Lex.SessionAttributes.paymentType","paymentDate":"$.Lex.SessionAttributes.paymentDate","paymentAmount":"$.Lex.SessionAttributes.paymentAmount","productInterest":"$.Lex.SessionAttributes.productInterest","preferredTime":"$.Lex.SessionAttributes.preferredTime","topicInterest":"$.Lex.SessionAttributes.topicInterest"}},"Transitions":{"NextAction":"handoff-branch","Errors":[{"NextAction":"handoff-branch","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"handoff-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.handoffRequired"},"Transitions":{"NextAction":"disconnect","Errors":[{"NextAction":"disconnect","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"handoff-set-attributes","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"handoff-set-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"handoffReason":"$.Lex.SessionAttributes.handoffReason","handoffSummary":"$.Lex.SessionAttributes.handoffSummary","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail"}},"Transitions":{"NextAction":"handoff-set-hooks","Errors":[{"NextAction":"handoff-set-hooks","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"handoff-set-hooks","Type":"UpdateContactEventHooks","Parameters":{"EventHooks":{"CustomerQueue":"${MantleQueueFlow.ContactFlowArn}","AgentWhisper":"${MantleAgentWhisperFlow.ContactFlowArn}"}},"Transitions":{"NextAction":"handoff-set-queue","Errors":[{"NextAction":"handoff-set-queue","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"handoff-set-queue","Type":"UpdateContactTargetQueue","Parameters":{"QueueId":"${HandoffQueueArn}"},"Transitions":{"NextAction":"handoff-hours","Errors":[{"NextAction":"handoff-fallback","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"handoff-hours","Type":"CheckHoursOfOperation","Parameters":{},"Transitions":{"NextAction":"handoff-fallback","Errors":[{"NextAction":"handoff-fallback","ErrorType":"NoMatchingError"}],"Conditions":[{"NextAction":"handoff-transfer","Condition":{"Operator":"Equals","Operands":["True"]}},{"NextAction":"handoff-fallback","Condition":{"Operator":"Equals","Operands":["False"]}}]}},{"Identifier":"handoff-transfer","Type":"TransferContactToQueue","Parameters":{},"Transitions":{"NextAction":"disconnect","Errors":[{"NextAction":"handoff-fallback","ErrorType":"NoMatchingError"},{"NextAction":"handoff-fallback","ErrorType":"QueueAtCapacity"}],"Conditions":[]}},{"Identifier":"handoff-fallback","Type":"MessageParticipant","Parameters":{"Text":"ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสายค่ะ จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"},"Transitions":{"NextAction":"disconnect","Errors":[{"NextAction":"disconnect","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"error-message","Type":"MessageParticipant","Parameters":{"Text":"ขออภัยค่ะ ระบบทดลองยังไม่สามารถดำเนินการต่อได้ กรุณาลองใหม่ภายหลังค่ะ"},"Transitions":{"NextAction":"disconnect","Errors":[{"NextAction":"disconnect","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"disconnect","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}
+        {"Version":"2019-10-30","StartAction":"logging","Metadata":{"entryPointPosition":{"x":20,"y":20},"snapToGrid":false,"name":"FSI Mantle Experimental Flow","description":"Feature-flagged Thai Luna/Terra dialogue path","type":"contactFlow","status":"published","ActionMetadata":{"contact-lens-analytics":{"position":{"x":120,"y":230}}}},"Actions":[{"Identifier":"logging","Type":"UpdateFlowLoggingBehavior","Parameters":{"FlowLoggingBehavior":"Enabled"},"Transitions":{"NextAction":"contact-lens-analytics","Errors":[],"Conditions":[]}},{"Identifier":"contact-lens-analytics","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"},"AnalyticsBehavior":{"Enabled":"True","AnalyticsLanguage":"th-TH","ChannelConfiguration":{"Voice":{"AnalyticsModes":["RealTime","AutomatedInteraction"]}}}},"Transitions":{"NextAction":"set-voice","Errors":[],"Conditions":[]}},{"Identifier":"set-voice","Type":"UpdateContactTextToSpeechVoice","Parameters":{"TextToSpeechVoice":"SUDA","TextToSpeechEngine":"connect:agentic"},"Transitions":{"NextAction":"set-language","Errors":[{"NextAction":"set-language","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"set-language","Type":"UpdateContactData","Parameters":{"LanguageCode":"th-TH"},"Transitions":{"NextAction":"scenario-branch","Errors":[{"NextAction":"scenario-branch","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"scenario-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Attributes.scenario"},"Transitions":{"NextAction":"intro-bank","Errors":[{"NextAction":"intro-bank","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"intro-bank","Condition":{"Operator":"Equals","Operands":["bank"]}},{"NextAction":"intro-insurance","Condition":{"Operator":"Equals","Operands":["insurance"]}},{"NextAction":"intro-broker","Condition":{"Operator":"Equals","Operands":["broker"]}}]}},{"Identifier":"intro-bank","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันโทรมาจากฝ่ายบริการลูกค้าของธนาคารนะคะ"},"Transitions":{"NextAction":"input-bank","Errors":[{"NextAction":"input-bank","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"intro-insurance","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของบริษัทประกันค่ะ โทรมาเพื่อนำเสนอข้อมูลแผนความคุ้มครอง การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการค่ะ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต หากสนใจจะให้เจ้าหน้าที่ผู้ได้รับอนุญาตติดต่อกลับค่ะ"},"Transitions":{"NextAction":"input-insurance","Errors":[{"NextAction":"input-insurance","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"intro-broker","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของบริษัทหลักทรัพย์ค่ะ โทรมาแจ้งข้อมูลสัมมนาการลงทุน ไม่ใช่การให้คำแนะนำการลงทุนค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ และผู้แนะนำการลงทุนที่ได้รับอนุญาตจะเป็นผู้ดูแลรายละเอียดค่ะ"},"Transitions":{"NextAction":"input-broker","Errors":[{"NextAction":"input-broker","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"input-bank","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"ไม่ทราบว่ากำลังเรียนสายคุณ $.Attributes.customerName อยู่หรือเปล่าคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"5000","x-amz-lex:audio:start-timeout-ms:*:*":"6000","x-amz-lex:allow-interrupt:*:*":"true"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"input-insurance","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"คุณ $.Attributes.customerName สะดวกคุยสักครู่ไหมคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"5000","x-amz-lex:audio:start-timeout-ms:*:*":"6000","x-amz-lex:allow-interrupt:*:*":"true"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"input-broker","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"คุณ $.Attributes.customerName สนใจรับรายละเอียดไหมคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"5000","x-amz-lex:audio:start-timeout-ms:*:*":"6000","x-amz-lex:allow-interrupt:*:*":"true"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"input-resume","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","amount":"$.Attributes.amount","dueDate":"$.Attributes.dueDate","mantleState":"$.Lex.SessionAttributes.mantleState","x-amz-lex:audio:end-confidence-threshold:*:*":"$.Lex.SessionAttributes.eotThreshold","x-amz-lex:audio:end-timeout-ms:*:*":"$.Lex.SessionAttributes.eotTimeoutMs","x-amz-lex:audio:start-timeout-ms:*:*":"6000","x-amz-lex:allow-interrupt:*:*":"$.Lex.SessionAttributes.allowInterrupt"}},"Transitions":{"NextAction":"route-result","Errors":[{"NextAction":"error-message","ErrorType":"NoMatchingError"},{"NextAction":"error-message","ErrorType":"NoMatchingCondition"},{"NextAction":"error-message","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"route-result","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"route-result","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.done"},"Transitions":{"NextAction":"input-resume","Errors":[{"NextAction":"input-resume","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"closing-message","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"closing-message","Type":"MessageParticipant","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt"},"Transitions":{"NextAction":"record-outcome","Errors":[{"NextAction":"record-outcome","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"record-outcome","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunctionArn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","scenario":"$.Attributes.scenario","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail","paymentType":"$.Lex.SessionAttributes.paymentType","paymentDate":"$.Lex.SessionAttributes.paymentDate","paymentAmount":"$.Lex.SessionAttributes.paymentAmount","productInterest":"$.Lex.SessionAttributes.productInterest","preferredTime":"$.Lex.SessionAttributes.preferredTime","topicInterest":"$.Lex.SessionAttributes.topicInterest"}},"Transitions":{"NextAction":"handoff-branch","Errors":[{"NextAction":"handoff-branch","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"handoff-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.handoffRequired"},"Transitions":{"NextAction":"disconnect","Errors":[{"NextAction":"disconnect","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"handoff-set-attributes","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"handoff-set-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"handoffReason":"$.Lex.SessionAttributes.handoffReason","handoffSummary":"$.Lex.SessionAttributes.handoffSummary","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail"}},"Transitions":{"NextAction":"handoff-set-hooks","Errors":[{"NextAction":"handoff-set-hooks","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"handoff-set-hooks","Type":"UpdateContactEventHooks","Parameters":{"EventHooks":{"CustomerQueue":"${MantleQueueFlow.ContactFlowArn}","AgentWhisper":"${MantleAgentWhisperFlow.ContactFlowArn}"}},"Transitions":{"NextAction":"handoff-set-queue","Errors":[{"NextAction":"handoff-set-queue","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"handoff-set-queue","Type":"UpdateContactTargetQueue","Parameters":{"QueueId":"${HandoffQueueArn}"},"Transitions":{"NextAction":"handoff-hours","Errors":[{"NextAction":"handoff-fallback","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"handoff-hours","Type":"CheckHoursOfOperation","Parameters":{},"Transitions":{"NextAction":"handoff-fallback","Errors":[{"NextAction":"handoff-fallback","ErrorType":"NoMatchingError"}],"Conditions":[{"NextAction":"handoff-transfer","Condition":{"Operator":"Equals","Operands":["True"]}},{"NextAction":"handoff-fallback","Condition":{"Operator":"Equals","Operands":["False"]}}]}},{"Identifier":"handoff-transfer","Type":"TransferContactToQueue","Parameters":{},"Transitions":{"NextAction":"disconnect","Errors":[{"NextAction":"handoff-fallback","ErrorType":"NoMatchingError"},{"NextAction":"handoff-fallback","ErrorType":"QueueAtCapacity"}],"Conditions":[]}},{"Identifier":"handoff-fallback","Type":"MessageParticipant","Parameters":{"Text":"ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสายค่ะ จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"},"Transitions":{"NextAction":"disconnect","Errors":[{"NextAction":"disconnect","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"error-message","Type":"MessageParticipant","Parameters":{"Text":"ขออภัยค่ะ ระบบทดลองยังไม่สามารถดำเนินการต่อได้ กรุณาลองใหม่ภายหลังค่ะ"},"Transitions":{"NextAction":"disconnect","Errors":[{"NextAction":"disconnect","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"disconnect","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}
   MantleInboundFlow:
     Type: AWS::Connect::ContactFlow
     Properties:
@@ -2203,7 +2478,7 @@ Resources:
       InstanceArn: !Ref ConnectInstanceArn
       Type: CONTACT_FLOW
       Content: !Sub |
-        {"Version":"2019-10-30","StartAction":"inbound-logging","Metadata":{"entryPointPosition":{"x":20,"y":20},"snapToGrid":false,"name":"FSI Mantle Inbound Thai","type":"contactFlow","status":"published","ActionMetadata":{}},"Actions":[{"Identifier":"inbound-logging","Type":"UpdateFlowLoggingBehavior","Parameters":{"FlowLoggingBehavior":"Enabled"},"Transitions":{"NextAction":"inbound-analytics","Conditions":[],"Errors":[]}},{"Identifier":"inbound-analytics","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"},"AnalyticsBehavior":{"Enabled":"True","AnalyticsLanguage":"th-TH","ChannelConfiguration":{"Voice":{"AnalyticsModes":["RealTime","AutomatedInteraction"]}}}},"Transitions":{"NextAction":"inbound-voice","Conditions":[],"Errors":[]}},{"Identifier":"inbound-voice","Type":"UpdateContactTextToSpeechVoice","Parameters":{"TextToSpeechVoice":"SUDA","TextToSpeechEngine":"connect:agentic"},"Transitions":{"NextAction":"inbound-language","Conditions":[],"Errors":[{"NextAction":"inbound-language","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-language","Type":"UpdateContactData","Parameters":{"LanguageCode":"th-TH"},"Transitions":{"NextAction":"inbound-scenario","Conditions":[],"Errors":[{"NextAction":"inbound-scenario","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-scenario","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"scenario":"insurance","customerName":"ผู้ทดลองระบบ","channel":"inbound"}},"Transitions":{"NextAction":"inbound-profile-lookup","Conditions":[],"Errors":[{"NextAction":"inbound-profile-lookup","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-profile-lookup","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${MantleDialogueFunction.Arn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"profile_lookup","callerNumber":"$.CustomerEndpoint.Address"}},"Transitions":{"NextAction":"inbound-profile-attributes","Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-profile-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"profileFound":"$.External.profileFound","profileGreeting":"$.External.profileGreeting","profileSummary":"$.External.profileSummary","profileFirstName":"$.External.profileFirstName","profileAmount":"$.External.profileAmount","profileDueDate":"$.External.profileDueDate"}},"Transitions":{"NextAction":"inbound-recognised","Errors":[{"NextAction":"inbound-recognised","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-recognised","Type":"Compare","Parameters":{"ComparisonValue":"$.Attributes.profileFound"},"Transitions":{"NextAction":"inbound-greeting","Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-greet-by-name","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-greet-by-name","Type":"MessageParticipant","Parameters":{"Text":"$.Attributes.profileGreeting"},"Transitions":{"NextAction":"inbound-greeting","Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-greeting","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของระบบสาธิตเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"},"Transitions":{"NextAction":"inbound-verify-branch","Conditions":[],"Errors":[{"NextAction":"inbound-verify-branch","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-verify-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Attributes.profileFound"},"Transitions":{"NextAction":"inbound-ask","Errors":[{"NextAction":"inbound-ask","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-record-off","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-record-off","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":[]}},"Transitions":{"NextAction":"inbound-verify-input","Errors":[],"Conditions":[]}},{"Identifier":"inbound-verify-input","Type":"GetParticipantInput","Parameters":{"Text":"เพื่อความปลอดภัย กรุณากดรหัสยืนยันสี่หลักตามด้วยเครื่องหมายสี่เหลี่ยมค่ะ","StoreInput":"True","InputTimeLimitSeconds":"12","InputValidation":{"CustomValidation":{"MaximumLength":"4"}}},"Transitions":{"NextAction":"inbound-verify-check","Errors":[{"NextAction":"inbound-record-on","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-verify-check","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${MantleDialogueFunction.Arn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"verify","enteredDigits":"$.StoredCustomerInput","callerNumber":"$.CustomerEndpoint.Address"}},"Transitions":{"NextAction":"inbound-verify-attributes","Errors":[{"NextAction":"inbound-record-on","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-verify-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"verified":"$.External.verified"}},"Transitions":{"NextAction":"inbound-record-on","Errors":[{"NextAction":"inbound-record-on","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-record-on","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"}},"Transitions":{"NextAction":"inbound-ask","Errors":[],"Conditions":[]}},{"Identifier":"inbound-ask","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"สอบถามเรื่องบริการธนาคาร, ประกัน, หรือหลักทรัพย์ได้เลยค่ะ หากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยนะคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","mode":"inbound_kb","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000","profileFound":"$.Attributes.profileFound","profileAmount":"$.Attributes.profileAmount","profileDueDate":"$.Attributes.profileDueDate","profileFirstName":"$.Attributes.profileFirstName","verified":"$.Attributes.verified"}},"Transitions":{"NextAction":"inbound-route","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"},{"NextAction":"inbound-error","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-error","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"inbound-resume","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","mode":"inbound_kb","mantleState":"$.Lex.SessionAttributes.mantleState","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"1100","x-amz-lex:audio:start-timeout-ms:*:*":"6000","profileFound":"$.Attributes.profileFound","profileAmount":"$.Attributes.profileAmount","profileDueDate":"$.Attributes.profileDueDate","profileFirstName":"$.Attributes.profileFirstName","verified":"$.Attributes.verified"}},"Transitions":{"NextAction":"inbound-route","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"},{"NextAction":"inbound-error","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-error","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"inbound-route","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.done"},"Transitions":{"NextAction":"inbound-resume","Errors":[{"NextAction":"inbound-resume","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-closing","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-closing","Type":"MessageParticipant","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt"},"Transitions":{"NextAction":"inbound-record-outcome","Conditions":[],"Errors":[{"NextAction":"inbound-record-outcome","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-record-outcome","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunctionArn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","scenario":"$.Attributes.scenario","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail"}},"Transitions":{"NextAction":"inbound-handoff-branch","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-branch","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.handoffRequired"},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-handoff-attributes","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-handoff-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"handoffReason":"$.Lex.SessionAttributes.handoffReason","handoffSummary":"$.Lex.SessionAttributes.handoffSummary","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail","profileSummary":"$.Attributes.profileSummary"}},"Transitions":{"NextAction":"inbound-handoff-hooks","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-hooks","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-hooks","Type":"UpdateContactEventHooks","Parameters":{"EventHooks":{"CustomerQueue":"${MantleQueueFlow.ContactFlowArn}","AgentWhisper":"${MantleAgentWhisperFlow.ContactFlowArn}"}},"Transitions":{"NextAction":"inbound-handoff-queue","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-queue","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-queue","Type":"UpdateContactTargetQueue","Parameters":{"QueueId":"${HandoffQueueArn}"},"Transitions":{"NextAction":"inbound-handoff-hours","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-hours","Type":"CheckHoursOfOperation","Parameters":{},"Transitions":{"NextAction":"inbound-handoff-fallback","Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"}],"Conditions":[{"NextAction":"inbound-handoff-transfer","Condition":{"Operator":"Equals","Operands":["True"]}},{"NextAction":"inbound-handoff-fallback","Condition":{"Operator":"Equals","Operands":["False"]}}]}},{"Identifier":"inbound-handoff-transfer","Type":"TransferContactToQueue","Parameters":{},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"},{"NextAction":"inbound-handoff-fallback","ErrorType":"QueueAtCapacity"}],"Conditions":[]}},{"Identifier":"inbound-handoff-fallback","Type":"MessageParticipant","Parameters":{"Text":"ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสายค่ะ จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"},"Transitions":{"NextAction":"inbound-end","Conditions":[],"Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-error","Type":"MessageParticipant","Parameters":{"Text":"ขออภัยค่ะ ระบบสาธิตยังไม่พร้อมให้บริการ กรุณาลองใหม่ภายหลังค่ะ"},"Transitions":{"NextAction":"inbound-end","Conditions":[],"Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-end","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}
+        {"Version":"2019-10-30","StartAction":"inbound-logging","Metadata":{"entryPointPosition":{"x":20,"y":20},"snapToGrid":false,"name":"FSI Mantle Inbound Thai","type":"contactFlow","status":"published","ActionMetadata":{}},"Actions":[{"Identifier":"inbound-logging","Type":"UpdateFlowLoggingBehavior","Parameters":{"FlowLoggingBehavior":"Enabled"},"Transitions":{"NextAction":"inbound-analytics","Conditions":[],"Errors":[]}},{"Identifier":"inbound-analytics","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"},"AnalyticsBehavior":{"Enabled":"True","AnalyticsLanguage":"th-TH","ChannelConfiguration":{"Voice":{"AnalyticsModes":["RealTime","AutomatedInteraction"]}}}},"Transitions":{"NextAction":"inbound-voice","Conditions":[],"Errors":[]}},{"Identifier":"inbound-voice","Type":"UpdateContactTextToSpeechVoice","Parameters":{"TextToSpeechVoice":"SUDA","TextToSpeechEngine":"connect:agentic"},"Transitions":{"NextAction":"inbound-language","Conditions":[],"Errors":[{"NextAction":"inbound-language","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-language","Type":"UpdateContactData","Parameters":{"LanguageCode":"th-TH"},"Transitions":{"NextAction":"inbound-scenario","Conditions":[],"Errors":[{"NextAction":"inbound-scenario","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-scenario","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"scenario":"insurance","customerName":"ผู้ทดลองระบบ","channel":"inbound"}},"Transitions":{"NextAction":"inbound-profile-lookup","Conditions":[],"Errors":[{"NextAction":"inbound-profile-lookup","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-profile-lookup","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${MantleDialogueFunction.Arn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"profile_lookup","callerNumber":"$.CustomerEndpoint.Address"}},"Transitions":{"NextAction":"inbound-profile-attributes","Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-profile-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"profileFound":"$.External.profileFound","profileGreeting":"$.External.profileGreeting","profileSummary":"$.External.profileSummary","profileFirstName":"$.External.profileFirstName","profileAmount":"$.External.profileAmount","profileDueDate":"$.External.profileDueDate"}},"Transitions":{"NextAction":"inbound-recognised","Errors":[{"NextAction":"inbound-recognised","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-recognised","Type":"Compare","Parameters":{"ComparisonValue":"$.Attributes.profileFound"},"Transitions":{"NextAction":"inbound-greeting","Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-greet-by-name","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-greet-by-name","Type":"MessageParticipant","Parameters":{"Text":"$.Attributes.profileGreeting"},"Transitions":{"NextAction":"inbound-greeting","Errors":[{"NextAction":"inbound-greeting","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-greeting","Type":"MessageParticipant","Parameters":{"Text":"สวัสดีค่ะ ดิฉันสุดา ผู้ช่วยอัตโนมัติของระบบสาธิตเสียงภาษาไทยค่ะ การสนทนานี้อาจถูกบันทึกเพื่อพัฒนาคุณภาพบริการ ดิฉันไม่ใช่ตัวแทนที่ได้รับอนุญาต และข้อมูลที่ใช้ตอบเป็นข้อมูลสมมติเพื่อการสาธิตค่ะ"},"Transitions":{"NextAction":"inbound-verify-branch","Conditions":[],"Errors":[{"NextAction":"inbound-verify-branch","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-verify-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Attributes.profileFound"},"Transitions":{"NextAction":"inbound-ask","Errors":[{"NextAction":"inbound-ask","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-record-off","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-record-off","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":[]}},"Transitions":{"NextAction":"inbound-verify-input","Errors":[],"Conditions":[]}},{"Identifier":"inbound-verify-input","Type":"GetParticipantInput","Parameters":{"Text":"เพื่อความปลอดภัย กรุณากดรหัสยืนยันสี่หลักตามด้วยเครื่องหมายสี่เหลี่ยมค่ะ","StoreInput":"True","InputTimeLimitSeconds":"12","InputValidation":{"CustomValidation":{"MaximumLength":"4"}}},"Transitions":{"NextAction":"inbound-verify-check","Errors":[{"NextAction":"inbound-record-on","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-verify-check","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${MantleDialogueFunction.Arn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"verify","enteredDigits":"$.StoredCustomerInput","callerNumber":"$.CustomerEndpoint.Address"}},"Transitions":{"NextAction":"inbound-verify-attributes","Errors":[{"NextAction":"inbound-record-on","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-verify-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"verified":"$.External.verified"}},"Transitions":{"NextAction":"inbound-record-on","Errors":[{"NextAction":"inbound-record-on","ErrorType":"NoMatchingError"}],"Conditions":[]}},{"Identifier":"inbound-record-on","Type":"UpdateContactRecordingBehavior","Parameters":{"RecordingBehavior":{"RecordedParticipants":["Agent","Customer"],"IVRRecordingBehavior":"Enabled"}},"Transitions":{"NextAction":"inbound-ask","Errors":[],"Conditions":[]}},{"Identifier":"inbound-ask","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"สอบถามเรื่องบริการธนาคาร, ประกัน, หรือหลักทรัพย์ได้เลยค่ะ หากต้องการคุยกับเจ้าหน้าที่ แจ้งได้เลยนะคะ","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","mode":"inbound_kb","mantleState":"{}","x-amz-lex:audio:end-confidence-threshold:*:*":"0.7","x-amz-lex:audio:end-timeout-ms:*:*":"5000","x-amz-lex:audio:start-timeout-ms:*:*":"6000","profileFound":"$.Attributes.profileFound","profileAmount":"$.Attributes.profileAmount","profileDueDate":"$.Attributes.profileDueDate","profileFirstName":"$.Attributes.profileFirstName","verified":"$.Attributes.verified","x-amz-lex:allow-interrupt:*:*":"true"}},"Transitions":{"NextAction":"inbound-route","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"},{"NextAction":"inbound-error","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-error","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"inbound-resume","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt","LexV2Bot":{"AliasArn":"${MantleLexAlias.Arn}"},"LexSessionAttributes":{"scenario":"$.Attributes.scenario","customerName":"$.Attributes.customerName","mode":"inbound_kb","mantleState":"$.Lex.SessionAttributes.mantleState","x-amz-lex:audio:end-confidence-threshold:*:*":"$.Lex.SessionAttributes.eotThreshold","x-amz-lex:audio:end-timeout-ms:*:*":"$.Lex.SessionAttributes.eotTimeoutMs","x-amz-lex:audio:start-timeout-ms:*:*":"6000","profileFound":"$.Attributes.profileFound","profileAmount":"$.Attributes.profileAmount","profileDueDate":"$.Attributes.profileDueDate","profileFirstName":"$.Attributes.profileFirstName","verified":"$.Attributes.verified","x-amz-lex:allow-interrupt:*:*":"$.Lex.SessionAttributes.allowInterrupt"}},"Transitions":{"NextAction":"inbound-route","Errors":[{"NextAction":"inbound-error","ErrorType":"NoMatchingError"},{"NextAction":"inbound-error","ErrorType":"NoMatchingCondition"},{"NextAction":"inbound-error","ErrorType":"InputTimeLimitExceeded"}],"Conditions":[{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["FallbackIntent"]}},{"NextAction":"inbound-route","Condition":{"Operator":"Equals","Operands":["MantleDialogue"]}}]}},{"Identifier":"inbound-route","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.done"},"Transitions":{"NextAction":"inbound-resume","Errors":[{"NextAction":"inbound-resume","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-closing","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-closing","Type":"MessageParticipant","Parameters":{"Text":"$.Lex.SessionAttributes.nextPrompt"},"Transitions":{"NextAction":"inbound-record-outcome","Conditions":[],"Errors":[{"NextAction":"inbound-record-outcome","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-record-outcome","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"${SessionContextFunctionArn}","InvocationTimeLimitSeconds":"8","LambdaInvocationAttributes":{"mode":"outcome","scenario":"$.Attributes.scenario","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail"}},"Transitions":{"NextAction":"inbound-handoff-branch","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-branch","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-branch","Type":"Compare","Parameters":{"ComparisonValue":"$.Lex.SessionAttributes.handoffRequired"},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingCondition"}],"Conditions":[{"NextAction":"inbound-handoff-attributes","Condition":{"Operator":"Equals","Operands":["true"]}}]}},{"Identifier":"inbound-handoff-attributes","Type":"UpdateContactAttributes","Parameters":{"Attributes":{"handoffReason":"$.Lex.SessionAttributes.handoffReason","handoffSummary":"$.Lex.SessionAttributes.handoffSummary","outcomeType":"$.Lex.SessionAttributes.outcomeType","outcomeDetail":"$.Lex.SessionAttributes.outcomeDetail","profileSummary":"$.Attributes.profileSummary"}},"Transitions":{"NextAction":"inbound-handoff-hooks","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-hooks","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-hooks","Type":"UpdateContactEventHooks","Parameters":{"EventHooks":{"CustomerQueue":"${MantleQueueFlow.ContactFlowArn}","AgentWhisper":"${MantleAgentWhisperFlow.ContactFlowArn}"}},"Transitions":{"NextAction":"inbound-handoff-queue","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-queue","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-queue","Type":"UpdateContactTargetQueue","Parameters":{"QueueId":"${HandoffQueueArn}"},"Transitions":{"NextAction":"inbound-handoff-hours","Conditions":[],"Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-handoff-hours","Type":"CheckHoursOfOperation","Parameters":{},"Transitions":{"NextAction":"inbound-handoff-fallback","Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"}],"Conditions":[{"NextAction":"inbound-handoff-transfer","Condition":{"Operator":"Equals","Operands":["True"]}},{"NextAction":"inbound-handoff-fallback","Condition":{"Operator":"Equals","Operands":["False"]}}]}},{"Identifier":"inbound-handoff-transfer","Type":"TransferContactToQueue","Parameters":{},"Transitions":{"NextAction":"inbound-end","Errors":[{"NextAction":"inbound-handoff-fallback","ErrorType":"NoMatchingError"},{"NextAction":"inbound-handoff-fallback","ErrorType":"QueueAtCapacity"}],"Conditions":[]}},{"Identifier":"inbound-handoff-fallback","Type":"MessageParticipant","Parameters":{"Text":"ขณะนี้ยังไม่มีเจ้าหน้าที่ว่างรับสายค่ะ จะให้เจ้าหน้าที่ติดต่อกลับโดยเร็วที่สุด ขอบคุณค่ะ"},"Transitions":{"NextAction":"inbound-end","Conditions":[],"Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-error","Type":"MessageParticipant","Parameters":{"Text":"ขออภัยค่ะ ระบบสาธิตยังไม่พร้อมให้บริการ กรุณาลองใหม่ภายหลังค่ะ"},"Transitions":{"NextAction":"inbound-end","Conditions":[],"Errors":[{"NextAction":"inbound-end","ErrorType":"NoMatchingError"}]}},{"Identifier":"inbound-end","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}
 Outputs:
   MantleFunctionName:
     Value: !Ref MantleDialogueFunction
