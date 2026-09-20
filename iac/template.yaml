@@ -248,18 +248,18 @@ Resources:
           import json
           import os
           import re
-          
+
           import boto3
-          
+
           qconnect = boto3.client("qconnect")
           connect = boto3.client("connect")
-          
+
           INSTANCE_ID = os.environ.get("INSTANCE_ID", "")
           AGENT_IDS = json.loads(os.environ.get("SCENARIO_AGENT_IDS", "{}"))
-          
+
           _THAI_DIGITS = ("ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า")
-          
-          
+
+
           def _thai_integer_words(value):
               """Render a non-negative integer as continuous Thai number words."""
               value = int(value)
@@ -285,8 +285,8 @@ Resources:
               if units:
                   words.append("เอ็ด" if units == 1 and words else _THAI_DIGITS[units])
               return "".join(words)
-          
-          
+
+
           def _thai_baht_words(amount):
               """Render a decimal currency attribute without exposing punctuation to TTS."""
               raw = re.sub(r"[\s,]", "", str(amount or ""))
@@ -297,8 +297,8 @@ Resources:
               satang = int((fraction + "00")[:2]) if dot else 0
               spoken = _thai_integer_words(whole) + "บาท"
               return spoken + (_thai_integer_words(satang) + "สตางค์" if satang else "ถ้วน")
-          
-          
+
+
           BRIEFS = {
               "bank": (
                   "ROLE: Collections officer at a bank. CUSTOMER_NAME={name}. "
@@ -326,8 +326,26 @@ Resources:
                   "CONDUCT: helpful and concise, one invitation only, accept no immediately, no hard sell, urgency, scarcity, fear, or FOMO. "
                   "FORBIDDEN: stock recommendations, returns, price targets, suitability decisions, invented information, loans, or insurance."
               ),
+              # Retail carries far less regulatory weight than the three FSI scenarios: there is no
+              # licensed-agent boundary and no approved-facts allowlist. What it must not do is
+              # promise an outcome that depends on inspection or on a courier, so damage is routed
+              # to a person rather than resolved on the call.
+              "retail": (
+                  "ROLE: Customer care officer at an online retailer. CUSTOMER: {name}. "
+                  "FACTS: ORDER_VALUE={amount}; SCHEDULED_DELIVERY={due}. "
+                  "OBJECTIVE: identify which of three journeys the customer wants -- reschedule the delivery, "
+                  "track the order, or return an item -- then complete only that one. "
+                  "RESCHEDULE: collect one new delivery date, read it back verbatim, and confirm before closing. "
+                  "TRACK: state SCHEDULED_DELIVERY as given and ask whether anything else is needed. "
+                  "RETURN: collect one reason from damaged item, wrong item, or changed mind. "
+                  "ESCALATE: a damaged item goes to a person, because photographs, courier liability, and any "
+                  "goodwill decision are outside what this assistant may promise. "
+                  "CONDUCT: brief and practical, one question per turn, follow the customer if they switch journey. "
+                  "FORBIDDEN: invented tracking detail, courier names, refund amounts or timing, compensation, "
+                  "delivery guarantees, or any promise that an item is in stock."
+              ),
           }
-          
+
           INITIAL_STATE = {
               "bank": {
                   "version": 2,
@@ -382,27 +400,44 @@ Resources:
                       "fallback": "offer_callback",
                   },
               },
+              # Retail closes in fewer turns than the FSI journeys: one journey choice, then at most
+              # one value plus its read-back. The budget is tighter for that reason, not by oversight.
+              "retail": {
+                  "version": 2,
+                  "scenario": "retail",
+                  "stage": "choose_journey",
+                  "objective": "identify one of reschedule, track, or return, then complete only that journey",
+                  "requiredBeforeClose": ["journey"],
+                  "confirmationRequiredFor": ["delivery_rescheduled"],
+                  "outcome": "pending",
+                  "turnBudget": 6,
+                  "noiseRecovery": {
+                      "neverGuess": True,
+                      "repeatBeforeCallback": 2,
+                      "fallback": "offer_callback",
+                  },
+              },
           }
-          
-          
+
+
           def _parse_session_arn(session_arn):
               tail = session_arn.split(":session/", 1)[1]
               assistant_id, session_id = tail.split("/", 1)
               return assistant_id, session_id
-          
-          
+
+
           def _session_ids(parameters):
               return _parse_session_arn(parameters.get("sessionArn", ""))
-          
-          
+
+
           def _clean_attributes(values):
               return {
                   key: str(value)[:32767]
                   for key, value in values.items()
                   if value not in (None, "", "$.Lex.SessionAttributes.undefined")
               }
-          
-          
+
+
           def _record_outcome(event, parameters):
               scenario = (parameters.get("scenario") or "unknown").lower()
               outcome_type = parameters.get("outcomeType") or "unknown"
@@ -419,7 +454,7 @@ Resources:
                       "fsiTopicInterest": parameters.get("topicInterest"),
                   }
               )
-          
+
               session_arn = parameters.get("sessionArn", "")
               if ":session/" in session_arn:
                   assistant_id, session_id = _parse_session_arn(session_arn)
@@ -444,7 +479,7 @@ Resources:
                           }
                       ],
                   )
-          
+
               contact_data = event.get("Details", {}).get("ContactData", {}) or {}
               contact_id = contact_data.get("InitialContactId") or contact_data.get("ContactId")
               if INSTANCE_ID and contact_id and details:
@@ -454,28 +489,28 @@ Resources:
                       Attributes=details,
                   )
               return {"status": "ok", "mode": "outcome", "outcome": outcome_type}
-          
-          
+
+
           def _setup_session(parameters):
               session_arn = parameters.get("sessionArn", "")
               scenario = (parameters.get("scenario") or "bank").lower()
               if scenario not in BRIEFS:
                   scenario = "bank"
-          
+
               name = parameters.get("customerName") or "ลูกค้า"
               amount = parameters.get("amount") or "-"
               amount_spoken = _thai_baht_words(amount)
               due_date = parameters.get("dueDate") or "-"
               assistant_id, session_id = _parse_session_arn(session_arn)
-          
+
               agent_id = AGENT_IDS.get(scenario)
               if not agent_id:
                   raise ValueError(f"missing agent ID for scenario: {scenario}")
-          
+
               brief = BRIEFS[scenario].format(name=name, amount=amount, amount_spoken=amount_spoken, due=due_date)
               call_state = dict(INITIAL_STATE[scenario])
               call_state["customerName"] = name
-          
+
               qconnect.update_session(
                   assistantId=assistant_id,
                   sessionId=session_id,
@@ -504,8 +539,8 @@ Resources:
                   "agentId": agent_id,
                   "stage": call_state["stage"],
               }
-          
-          
+
+
           def handler(event, context):
               parameters = event.get("Details", {}).get("Parameters", {}) or {}
               try:
@@ -518,7 +553,6 @@ Resources:
               except Exception as error:  # never break the call over context persistence
                   print(f"session operation failed: {error}")
                   return {"status": "error", "reason": "session operation failed"}
-
   SessionContextPermission:
     Type: AWS::Lambda::Permission
     Properties:
