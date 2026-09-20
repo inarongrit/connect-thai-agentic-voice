@@ -144,9 +144,30 @@ class RepeatRequestTests(unittest.TestCase):
         self.assertNotEqual(second["outcomeType"], "unresolved_needs_human")
 
     def test_a_genuine_stall_still_escalates(self):
+        # The ladder is now three rungs, not one. Two real calls transferred with every
+        # slot unspecified because a single unrecognised turn was enough, so the caller
+        # now gets graded re-asks before a person is spent on the call. The guarantee that
+        # a genuine stall DOES eventually escalate is what this pins.
+        result = run("insurance", "อือ")
+        for _ in range(4):
+            if result["outcomeType"] == "unresolved_needs_human":
+                break
+            result = run("insurance", "อือ", result)
+        self.assertEqual(result["outcomeType"], "unresolved_needs_human")
+        self.assertEqual(result["done"], "true")
+
+    def test_an_early_stall_is_given_another_try_rather_than_transferred(self):
         first = run("insurance", "อือ")
         second = run("insurance", "อือ", first)
-        self.assertEqual(second["outcomeType"], "unresolved_needs_human")
+        self.assertEqual(second["done"], "false")
+        self.assertNotEqual(second["outcomeType"], "unresolved_needs_human")
+
+    def test_a_re_ask_is_reworded_rather_than_repeated_verbatim(self):
+        # Saying the identical sentence back is the least useful response to a caller who
+        # was not understood.
+        first = run("insurance", "อือ")
+        second = run("insurance", "อือ", first)
+        self.assertNotEqual(second["nextPrompt"], first["nextPrompt"])
 
 
 if __name__ == "__main__":
