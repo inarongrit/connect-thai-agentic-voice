@@ -217,8 +217,8 @@
           "amount": "$.Attributes.amount",
           "dueDate": "$.Attributes.dueDate",
           "mantleState": "{}",
-          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "5000",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.6",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1500",
           "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
           "x-amz-lex:allow-interrupt:*:*": "true"
         }
@@ -275,8 +275,8 @@
           "amount": "$.Attributes.amount",
           "dueDate": "$.Attributes.dueDate",
           "mantleState": "{}",
-          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "5000",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.6",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1500",
           "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
           "x-amz-lex:allow-interrupt:*:*": "true"
         }
@@ -333,8 +333,8 @@
           "amount": "$.Attributes.amount",
           "dueDate": "$.Attributes.dueDate",
           "mantleState": "{}",
-          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "5000",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.6",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1500",
           "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
           "x-amz-lex:allow-interrupt:*:*": "true"
         }
@@ -408,8 +408,8 @@
           "amount": "$.Attributes.amount",
           "dueDate": "$.Attributes.dueDate",
           "mantleState": "{}",
-          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "5000",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.6",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1500",
           "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
           "x-amz-lex:allow-interrupt:*:*": "true"
         }
@@ -547,7 +547,7 @@
         "NextAction": "record-outcome",
         "Errors": [
           {
-            "NextAction": "record-outcome",
+            "NextAction": "closing-message-fallback",
             "ErrorType": "NoMatchingError"
           }
         ],
@@ -762,6 +762,23 @@
       "Type": "DisconnectParticipant",
       "Parameters": {},
       "Transitions": {}
+    },
+    {
+      "Identifier": "closing-message-fallback",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "ขอบคุณที่ใช้บริการค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "record-outcome",
+        "Errors": [
+          {
+            "NextAction": "record-outcome",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
     }
   ]
 }

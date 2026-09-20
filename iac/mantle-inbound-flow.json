@@ -356,8 +356,8 @@
           "customerName": "$.Attributes.customerName",
           "mode": "inbound_kb",
           "mantleState": "{}",
-          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.7",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "5000",
+          "x-amz-lex:audio:end-confidence-threshold:*:*": "0.6",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1500",
           "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
           "profileFound": "$.Attributes.profileFound",
           "profileAmount": "$.Attributes.profileAmount",
@@ -505,7 +505,7 @@
         "Conditions": [],
         "Errors": [
           {
-            "NextAction": "inbound-record-outcome",
+            "NextAction": "inbound-closing-fallback",
             "ErrorType": "NoMatchingError"
           }
         ]
@@ -714,6 +714,23 @@
       "Type": "DisconnectParticipant",
       "Parameters": {},
       "Transitions": {}
+    },
+    {
+      "Identifier": "inbound-closing-fallback",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "ขอบคุณที่ใช้บริการค่ะ"
+      },
+      "Transitions": {
+        "NextAction": "inbound-record-outcome",
+        "Errors": [
+          {
+            "NextAction": "inbound-record-outcome",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
     }
   ]
 }

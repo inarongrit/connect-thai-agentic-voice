@@ -40,7 +40,7 @@ class SpeechTuningTest(unittest.TestCase):
         state = MODULE._initial_state("bank")
         self.assertEqual(
             MODULE._speech_tuning(state),
-            {"eotThreshold": "0.7", "eotTimeoutMs": "5000", "allowInterrupt": "true"},
+            {"eotThreshold": "0.6", "eotTimeoutMs": "1500", "allowInterrupt": "true"},
         )
 
     def test_confirmation_turn_ends_on_confidence_not_silence(self):
@@ -51,21 +51,21 @@ class SpeechTuningTest(unittest.TestCase):
         self.assertEqual(tuning["eotThreshold"], "0.5")
         # ...but a tolerant silence window, so "ไม่ใช่ค่ะ ... วันที่ยี่สิบห้าค่ะ" is not
         # truncated at the beat before the correction.
-        self.assertEqual(tuning["eotTimeoutMs"], "7000")
+        self.assertEqual(tuning["eotTimeoutMs"], "1200")
 
     def test_dictated_readback_keeps_a_tolerant_timeout(self):
         # A caller who rejects a date readback usually restates the date in the same
         # breath, pausing mid-utterance, so the timeout must not collapse to yes/no.
         state = MODULE._initial_state("bank")
         state["pending"] = {"field": "paymentDate", "raw": "สิบห้า"}
-        self.assertEqual(MODULE._speech_tuning(state)["eotTimeoutMs"], "7000")
+        self.assertEqual(MODULE._speech_tuning(state)["eotTimeoutMs"], "1200")
 
     def test_amount_dictation_is_conservative(self):
         state = MODULE._initial_state("bank")
         state["stage"] = "payment_amount"
         self.assertEqual(
             MODULE._speech_tuning(state),
-            {"eotThreshold": "0.9", "eotTimeoutMs": "7000", "allowInterrupt": "true"},
+            {"eotThreshold": "0.8", "eotTimeoutMs": "2500", "allowInterrupt": "true"},
         )
 
     def test_emitted_values_stay_inside_supported_ranges(self):
@@ -116,8 +116,8 @@ class FlowWiringTest(unittest.TestCase):
                 if "SessionAttributes.nextPrompt" in str(params.get("Text", "")):
                     continue
                 attrs = params["LexSessionAttributes"]
-                self.assertEqual(attrs[THRESHOLD], "0.7", name)
-                self.assertEqual(attrs[TIMEOUT], "5000", name)
+                self.assertEqual(attrs[THRESHOLD], "0.6", name)
+                self.assertEqual(attrs[TIMEOUT], "1500", name)
                 self.assertEqual(attrs[INTERRUPT], "true", name)
 
 
@@ -149,6 +149,8 @@ class SpeechRenderingTest(unittest.TestCase):
         for signal in sorted(MODULE.SYMPATHETIC_SIGNALS):
             state = MODULE._initial_state("bank")
             state["primarySignal"] = signal
+            # primarySignal is sticky; the tag is only applied on the turn it was raised.
+            state["signalTurn"] = state["turn"]
             spoken = MODULE._for_speech("เข้าใจสถานการณ์ค่ะ", state)
             self.assertTrue(spoken.startswith(MODULE.SYMPATHETIC_TAG), signal)
             self.assertIn("เข้าใจสถานการณ์ค่ะ", spoken)
@@ -297,7 +299,7 @@ class DictatedStageCoverageTest(unittest.TestCase):
             state = MODULE._initial_state("bank")
             state["pending"] = {"field": field, "raw": "x"}
             tuning = MODULE._speech_tuning(state)
-            self.assertEqual(tuning["eotTimeoutMs"], "7000", field)
+            self.assertEqual(tuning["eotTimeoutMs"], "1200", field)
             # Still ends on confidence, because the likely answer is one word.
             self.assertEqual(tuning["eotThreshold"], "0.5", field)
 
@@ -320,8 +322,8 @@ class DictatedStageCoverageTest(unittest.TestCase):
             state = MODULE._initial_state("bank")
             state["stage"] = stage
             tuning = MODULE._speech_tuning(state)
-            self.assertEqual(tuning["eotThreshold"], "0.9", stage)
-            self.assertEqual(tuning["eotTimeoutMs"], "7000", stage)
+            self.assertEqual(tuning["eotThreshold"], "0.8", stage)
+            self.assertEqual(tuning["eotTimeoutMs"], "2500", stage)
 
     def test_every_dictated_stage_is_a_real_stage_value(self):
         # A typo here would silently never match, which is the bug this test exists for.
@@ -364,7 +366,10 @@ class PendingFieldCoverageTest(unittest.TestCase):
         # The failure mode is a pause inside the turn, not a long word: end-timeout-ms
         # measures silence after speech. 800 ms was the original value and is too tight
         # for "ไม่ใช่ค่ะ ... วันที่ยี่สิบห้าค่ะ".
-        self.assertGreaterEqual(int(MODULE.EOT_CONFIRMATION[1]), 5000)
+        # Retuned down from 7000 after a real call felt sluggish: the window is the
+        # FALLBACK for when confidence misses, so a generous value is dead air, not
+        # safety. Still comfortably longer than a trailing ค่ะ.
+        self.assertGreaterEqual(int(MODULE.EOT_CONFIRMATION[1]), 1000)
 
 
 class MarkupInjectionTest(unittest.TestCase):
@@ -405,6 +410,7 @@ class MarkupInjectionTest(unittest.TestCase):
         # An injected angry tag must not defeat, duplicate or precede the sympathetic one.
         state = MODULE._initial_state("bank")
         state["primarySignal"] = "hardship"
+        state["signalTurn"] = state["turn"]
         spoken = MODULE._for_speech('<emotion value="angry"/>เข้าใจค่ะ', state)
         self.assertEqual(spoken.count("<emotion"), 1)
         self.assertTrue(spoken.startswith(MODULE.SYMPATHETIC_TAG))
@@ -442,6 +448,98 @@ class MarkupInjectionTest(unittest.TestCase):
             "every nextPrompt must go through _for_speech; one path is unsanitised",
         )
         self.assertNotIn('"nextPrompt": _compact(', source)
+
+
+class ReportedCallDefectsTest(unittest.TestCase):
+    """Regressions for two faults a caller reported from a real Thai call.
+
+    Both were invisible to the existing suite. The first because the tests asserted the
+    pacing values were what we had chosen, not whether those values were sensible; the
+    second because no test looked at what the caller hears last.
+    """
+
+    def test_no_pacing_tier_leaves_the_caller_in_long_dead_air(self):
+        # The window is the fallback for when end-of-turn confidence misses, so it is the
+        # failure case. 5000/7000 ms made the failure case 4-6x the entire model latency.
+        for tier in (MODULE.EOT_CONFIRMATION, MODULE.EOT_DICTATED, MODULE.EOT_DEFAULT):
+            self.assertLessEqual(int(tier[1]), 2500, tier)
+            self.assertGreaterEqual(int(tier[1]), 1000, tier)
+
+    def test_open_ended_turns_are_the_briskest_tier(self):
+        # Most turns are open-ended, so this tier sets the conversational feel.
+        self.assertLessEqual(int(MODULE.EOT_DEFAULT[1]), int(MODULE.EOT_DICTATED[1]))
+
+    def test_a_closing_line_always_thanks_the_caller(self):
+        state = MODULE._initial_state("bank")
+        state["stage"] = "closed"
+        spoken = MODULE._for_speech("ยืนยันแผนชำระบางส่วนเรียบร้อยแล้ว", state, done=True)
+        self.assertIn("ขอบคุณ", spoken)
+
+    def test_a_closing_line_is_not_thanked_twice(self):
+        state = MODULE._initial_state("bank")
+        state["stage"] = "closed"
+        spoken = MODULE._for_speech("ยืนยันแล้ว ขอบคุณค่ะ", state, done=True)
+        self.assertEqual(spoken.count("ขอบคุณ"), 1)
+
+    def test_a_handoff_is_not_thanked_goodbye(self):
+        # That line ends by asking the caller to hold, so the call is not over.
+        state = MODULE._initial_state("bank")
+        state["stage"] = "closed"
+        spoken = MODULE._for_speech("รับทราบค่ะ กรุณาถือสายรอสักครู่ค่ะ", state,
+                                    done=True, handoff=True)
+        self.assertNotIn("ขอบคุณ", spoken)
+
+    def test_the_closing_line_is_never_tagged(self):
+        # done=true leaves the Lex block: the final line is spoken by a plain
+        # MessageParticipant with TextToSpeechType "text", which cannot parse a tag. A flow
+        # log from the reported call showed the tag arriving there verbatim.
+        state = MODULE._initial_state("bank")
+        state["primarySignal"] = "hardship"
+        state["signalTurn"] = state["turn"]
+        state["stage"] = "closed"
+        spoken = MODULE._for_speech("ยืนยันแล้ว", state, done=True)
+        self.assertNotIn("<", spoken)
+        self.assertNotIn("emotion", spoken)
+
+    def test_sympathy_does_not_bleed_across_the_whole_call(self):
+        # primarySignal is sticky, so without a turn check one hardship disclosure tagged
+        # every later prompt including the closing line.
+        state = MODULE._initial_state("bank")
+        state["primarySignal"] = "hardship"
+        state["turn"] = 2
+        state["signalTurn"] = 2
+        self.assertIn("<emotion", MODULE._for_speech("เข้าใจค่ะ", state))
+        state["turn"] = 5
+        self.assertNotIn("<emotion", MODULE._for_speech("สะดวกชำระแบบไหนคะ", state))
+
+    def test_both_flows_have_an_audible_closing_fallback(self):
+        # The closing block's only error edge went to the outcome Lambda and then to
+        # disconnect, so a failed playback was inaudible and invisible in the flow log.
+        for name in ("mantle-flow.json", "mantle-inbound-flow.json"):
+            flow = json.loads((ROOT / "iac" / name).read_text())
+            actions = {a["Identifier"]: a for a in flow["Actions"]}
+            closing = next(a for a in flow["Actions"]
+                           if a.get("Type") == "MessageParticipant"
+                           and a["Parameters"].get("Text") == "$.Lex.SessionAttributes.nextPrompt")
+            for error in closing["Transitions"]["Errors"]:
+                target = actions[error["NextAction"]]
+                self.assertEqual(target["Type"], "MessageParticipant", name)
+                self.assertIn("ขอบคุณ", target["Parameters"]["Text"], name)
+
+    def test_entry_blocks_match_the_open_ended_tier(self):
+        # The entry blocks are not driven by _speech_tuning, so the Lambda retune alone
+        # would not have fixed the opening turn of a call.
+        threshold, timeout = MODULE.EOT_DEFAULT
+        for name in ("mantle-flow.json", "mantle-inbound-flow.json"):
+            flow = json.loads((ROOT / "iac" / name).read_text())
+            for action in flow["Actions"]:
+                if action.get("Type") != "ConnectParticipantWithLexBot":
+                    continue
+                attrs = action["Parameters"]["LexSessionAttributes"]
+                if attrs[TIMEOUT].startswith("$."):
+                    continue
+                self.assertEqual(attrs[THRESHOLD], threshold, action["Identifier"])
+                self.assertEqual(attrs[TIMEOUT], timeout, action["Identifier"])
 
 
 if __name__ == "__main__":

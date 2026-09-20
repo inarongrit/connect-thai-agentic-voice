@@ -146,10 +146,10 @@ def check(walk, turn, transcript, attrs):
     pending = json.loads(attrs.get("mantleState", "{}")).get("pending") or {}
     if stage in DICTATED_STAGES:
         if pending:
-            if attrs.get("eotTimeoutMs") != "7000":
+            if attrs.get("eotTimeoutMs") != "1200":
                 fail(f"stage {stage} has a pending readback but timeout is "
                      f"{attrs.get('eotTimeoutMs')}; a restated value would be cut off")
-        elif attrs.get("eotThreshold") != "0.9" or attrs.get("eotTimeoutMs") != "7000":
+        elif attrs.get("eotThreshold") != "0.8" or attrs.get("eotTimeoutMs") != "2500":
             fail(f"stage {stage} is dictated but pacing is "
                  f"{attrs.get('eotThreshold')}/{attrs.get('eotTimeoutMs')}")
 
