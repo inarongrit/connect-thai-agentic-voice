@@ -1611,6 +1611,11 @@ def _apply_signal(state, signal, scenario):
     Returns None when the scenario handler should process the turn instead.
     """
     state["primarySignal"] = signal
+    # The turn the signal was raised on. primarySignal itself must persist, because later
+    # routing and the outcome detail depend on it, but the sympathetic delivery should land
+    # on the acknowledgement and then stop. Without this, one hardship disclosure tagged
+    # every remaining prompt of the call.
+    state["signalTurn"] = state.get("turn", 0)
     if signal == "do_not_contact":
         state["outcomeDetail"] = "signal=do_not_contact; contact ban requested"
         return _complete(state, "do_not_contact",
@@ -2131,9 +2136,26 @@ def _needs_model(scenario, state, transcript):
 # confidence is the primary lever; the silence timeout only applies when confidence has
 # not already ended the turn. Threshold must stay inside 0.5-0.9 or Lex rejects the
 # session attribute; timeout outside 500-10000 is silently clamped.
-EOT_CONFIRMATION = ("0.5", "7000")  # ใช่ / ไม่ใช่ -- see _speech_tuning for why 7000
-EOT_DICTATED = ("0.9", "7000")      # dates and amounts -- tolerate mid-utterance pauses
-EOT_DEFAULT = ("0.7", "5000")       # open-ended replies -- documented default pacing
+# Retuned after a real Thai call felt sluggish turn-by-turn. The first values treated the
+# silence window as a safety margin and set it generously: 5000 ms default, 7000 ms for
+# dictated and confirmation turns. That was backwards. The window is the FALLBACK used only
+# when the end-of-turn confidence model fails to close the turn, so it is the failure case,
+# and a generous failure case means the caller sits in dead air.
+#
+# Measured against the deployed function: Lambda plus Bedrock is 215-1070 ms, so a 5000 ms
+# fall-through was 71-89% of the delay the caller heard -- four to six times larger than the
+# entire Terra-versus-Luna difference we had been optimising.
+#
+# Two Thai-specific reasons fall-through was common rather than rare: the end-of-turn model
+# is less reliable on th-TH than on English, and the politeness particles ค่ะ / คะ / นะคะ
+# trail off in pitch and energy, which is exactly the profile that scores low confidence.
+# Raising the threshold to 0.9 therefore made fall-through MORE likely, so the tier meant to
+# be the most forgiving was the slowest one.
+#
+# Confidence stays the primary lever; the windows are now short because they are a backstop.
+EOT_CONFIRMATION = ("0.5", "1200")  # ใช่ / ไม่ใช่ -- one word, should close on confidence
+EOT_DICTATED = ("0.8", "2500")      # dates and amounts -- ~2x a natural Thai mid-turn pause
+EOT_DEFAULT = ("0.6", "1500")       # most turns -- this tier sets the conversational feel
 
 # Stages whose next caller utterance is dictated -- a date, a time, or an amount -- rather
 # than a choice or a free reply. These are the turns where a Thai speaker pauses
@@ -2159,6 +2181,10 @@ DICTATED_FIELDS = {"paymentDate", "paymentAmount", "preferredTime", "callbackTim
 # this is gated on the signal the dialogue already classified rather than set for a whole
 # call. do_not_contact is deliberately excluded: a caller asking to be left alone wants a
 # brief neutral acknowledgement, not sympathy.
+# Sympathy belongs on the turn that acknowledges the disclosure, not on the rest of the
+# call. primarySignal is sticky -- _apply_signal sets it and nothing clears it -- so
+# without a turn check one hardship disclosure tagged every later prompt, including the
+# closing line. A flow log from a real call showed exactly that.
 SYMPATHETIC_SIGNALS = {"hardship", "vulnerability", "complaint"}
 SYMPATHETIC_TAG = '<emotion value="sympathetic"/>'
 # Emotion tags are documented as a beta capability, and the engine speaks a tag it cannot
@@ -2203,22 +2229,51 @@ def _strip_markup(text):
     return " ".join(_RESIDUAL_BRACKETS_RE.sub(" ", without_tags).split())
 
 
-def _for_speech(message, state):
-    """Render a Thai prompt for the agentic voice engine.
+# Appended to the last thing a caller hears when the call ends here. Applied at the
+# boundary rather than written into each closing string, because a caller reported a call
+# that simply went quiet: the hardship completion said "ยืนยันแผนชำระบางส่วนเรียบร้อยแล้ว
+# จะส่งเรื่องให้ทีมช่วยเหลือตรวจสอบต่อและติดต่อกลับค่ะ" with no thank-you anywhere in it.
+# Eight of the terminal messages had the same gap. Doing it here means a new scenario cannot
+# reintroduce it, which a fourth vertical had already shown was easy to do.
+CLOSING_THANKS_TH = "ขอบคุณค่ะ"
+
+
+def _with_closing_thanks(spoken):
+    if not spoken or "ขอบคุณ" in spoken:
+        return spoken
+    return f"{spoken.rstrip()} {CLOSING_THANKS_TH}"
+
+
+def _for_speech(message, state, done=False, handoff=False):
+    """Render a Thai prompt for the voice engine.
 
     Applied at the boundary on the way to the contact flow, so the dialogue logic keeps
-    reasoning in plain Thai and only the spoken form carries markup. The engine speaks a
-    malformed tag aloud instead of dropping it, so the tag is a complete literal and is
-    never assembled from fragments at runtime.
+    reasoning in plain Thai and only the spoken form carries markup.
 
-    No <break> tags: AWS guidance is that natural punctuation should be the first tool for
-    pausing, and the classifier prompt already requires a comma between offered options,
-    which produces the pause. An explicit break there would be redundant markup.
+    The closing utterance is NEVER tagged, and that is not a style choice. When done=true
+    the flow leaves the Lex block and speaks the final line from `closing-message`, a plain
+    MessageParticipant rendering with TextToSpeechType "text" -- ordinary Connect TTS, not
+    the agentic engine that understands tags. A CloudWatch flow log from a real call shows
+    the tag arriving there verbatim, followed by a disconnect the caller heard as silence.
+    A tag is only safe on prompts that go back through the Lex block.
     """
     spoken = _strip_markup(message)
-    if spoken and SPEECH_TAGS_ENABLED and state.get("primarySignal") in SYMPATHETIC_SIGNALS:
-        return SYMPATHETIC_TAG + spoken
-    return spoken
+    if not spoken:
+        return spoken
+    closing = done or state.get("stage") == "closed"
+    if closing:
+        # Not on a handoff: that line ends by asking the caller to hold, so the call is not
+        # over and thanking them goodbye there would be wrong.
+        return spoken if handoff else _with_closing_thanks(spoken)
+    if not SPEECH_TAGS_ENABLED:
+        return spoken
+    if state.get("primarySignal") not in SYMPATHETIC_SIGNALS:
+        return spoken
+    # Only on the turn the signal was raised. primarySignal persists for routing, so
+    # comparing turns is what keeps sympathy from bleeding across the whole call.
+    if state.get("signalTurn") != state.get("turn"):
+        return spoken
+    return SYMPATHETIC_TAG + spoken
 
 
 def _speech_tuning(state):
@@ -2326,7 +2381,9 @@ def handler(event, context):
             **attributes,
             **_speech_tuning(state),
             "mantleState": json.dumps(state, ensure_ascii=False, separators=(",", ":")),
-            "nextPrompt": _for_speech(_compact(result["message"], 300), state),
+            "nextPrompt": _for_speech(_compact(result["message"], 300), state,
+                                     done=bool(result.get("done")),
+                                     handoff=str(result.get("handoffRequired")) == "true"),
             "done": "true" if result.get("done") else "false",
             "modelUsed": "knowledge-base",
             "modelLatencyMs": "0",
@@ -2384,7 +2441,9 @@ def handler(event, context):
         **attributes,
         **_speech_tuning(state),
         "mantleState": json.dumps(state, ensure_ascii=False, separators=(",", ":")),
-        "nextPrompt": _for_speech(_compact(result["message"], 300), state),
+        "nextPrompt": _for_speech(_compact(result["message"], 300), state,
+                                  done=bool(result.get("done")),
+                                  handoff=str(result.get("handoffRequired")) == "true"),
         "done": "true" if result.get("done") else "false",
         "modelUsed": str(state["lastModel"]),
         "modelLatencyMs": str(state["lastLatencyMs"]),

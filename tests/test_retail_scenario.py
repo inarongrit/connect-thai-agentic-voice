@@ -223,8 +223,8 @@ class PacingTest(unittest.TestCase):
         state = MODULE._initial_state("retail")
         state["stage"] = "deliveryDate"
         tuning = MODULE._speech_tuning(state)
-        self.assertEqual(tuning["eotThreshold"], "0.9")
-        self.assertEqual(tuning["eotTimeoutMs"], "7000")
+        self.assertEqual(tuning["eotThreshold"], "0.8")
+        self.assertEqual(tuning["eotTimeoutMs"], "2500")
 
     def test_delivery_date_is_registered_as_dictated(self):
         self.assertIn("deliveryDate", MODULE.DICTATED_STAGES)
