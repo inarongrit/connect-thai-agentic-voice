@@ -257,6 +257,177 @@
                 "MantleDialogue"
               ]
             }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Hardship"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Vulnerability"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Complaint"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "DoNotContact"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Callback"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "HumanAgent"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Declined"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Dispute"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedHealth"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedLife"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedSavings"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Appointment"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ProductQuestion"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Seminar"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Consultation"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "AdviceRequest"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Reschedule"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "TrackOrder"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ReturnRequest"
+              ]
+            }
           }
         ]
       }
@@ -315,6 +486,177 @@
                 "MantleDialogue"
               ]
             }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Hardship"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Vulnerability"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Complaint"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "DoNotContact"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Callback"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "HumanAgent"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Declined"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Dispute"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedHealth"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedLife"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedSavings"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Appointment"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ProductQuestion"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Seminar"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Consultation"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "AdviceRequest"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Reschedule"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "TrackOrder"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ReturnRequest"
+              ]
+            }
           }
         ]
       }
@@ -371,6 +713,177 @@
               "Operator": "Equals",
               "Operands": [
                 "MantleDialogue"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Hardship"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Vulnerability"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Complaint"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "DoNotContact"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Callback"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "HumanAgent"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Declined"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Dispute"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedHealth"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedLife"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedSavings"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Appointment"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ProductQuestion"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Seminar"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Consultation"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "AdviceRequest"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Reschedule"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "TrackOrder"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ReturnRequest"
               ]
             }
           }
@@ -448,6 +961,177 @@
                 "MantleDialogue"
               ]
             }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Hardship"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Vulnerability"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Complaint"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "DoNotContact"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Callback"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "HumanAgent"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Declined"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Dispute"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedHealth"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedLife"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedSavings"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Appointment"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ProductQuestion"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Seminar"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Consultation"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "AdviceRequest"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Reschedule"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "TrackOrder"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ReturnRequest"
+              ]
+            }
           }
         ]
       }
@@ -504,6 +1188,177 @@
               "Operator": "Equals",
               "Operands": [
                 "MantleDialogue"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Hardship"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Vulnerability"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Complaint"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "DoNotContact"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Callback"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "HumanAgent"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Declined"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Dispute"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedHealth"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedLife"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "NeedSavings"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Appointment"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ProductQuestion"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Seminar"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Consultation"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "AdviceRequest"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "Reschedule"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "TrackOrder"
+              ]
+            }
+          },
+          {
+            "NextAction": "route-result",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ReturnRequest"
               ]
             }
           }
