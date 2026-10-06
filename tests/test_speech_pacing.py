@@ -40,7 +40,7 @@ class SpeechTuningTest(unittest.TestCase):
         state = MODULE._initial_state("bank")
         self.assertEqual(
             MODULE._speech_tuning(state),
-            {"eotThreshold": "0.6", "eotTimeoutMs": "1500", "allowInterrupt": "true"},
+            {"eotThreshold": "0.6", "eotTimeoutMs": "1000", "allowInterrupt": "true"},
         )
 
     def test_a_readback_cannot_be_talked_over(self):
@@ -84,7 +84,7 @@ class SpeechTuningTest(unittest.TestCase):
         )
 
     def test_emitted_values_stay_inside_supported_ranges(self):
-        # Lex rejects a threshold outside 0.5-0.9 outright and silently clamps a timeout
+        # Lex rejects a threshold outside 0.5-0.9 outright and rejects a timeout
         # outside 500-10000, so an out-of-range value would fail quietly in production.
         states = []
         for stage in ("payment_amount", "assistance_options", "closed"):
@@ -132,7 +132,7 @@ class FlowWiringTest(unittest.TestCase):
                     continue
                 attrs = params["LexSessionAttributes"]
                 self.assertEqual(attrs[THRESHOLD], "0.6", name)
-                self.assertEqual(attrs[TIMEOUT], "1500", name)
+                self.assertEqual(attrs[TIMEOUT], "1000", name)
                 self.assertEqual(attrs[INTERRUPT], "true", name)
 
 

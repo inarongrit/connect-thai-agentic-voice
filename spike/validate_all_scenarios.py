@@ -4,7 +4,7 @@ Runs against the live function rather than the local module, so it catches deplo
 drift as well as logic bugs. Each invariant below corresponds to something that would be
 audible or broken on a real Thai call:
 
-  pacing      Lex rejects a threshold outside 0.5-0.9 and silently clamps a timeout
+  pacing      Lex rejects a threshold outside 0.5-0.9 and the speech model rejects a timeout
               outside 500-10000, so an out-of-range value fails quietly in production.
   dictated    Dates, times and amounts must run tolerant (0.9/7000) or a caller who
               pauses mid-utterance gets cut off.
@@ -133,7 +133,7 @@ def check(walk, turn, transcript, attrs):
     try:
         timeout = int(attrs["eotTimeoutMs"])
         if not 500 <= timeout <= 10000:
-            fail(f"eotTimeoutMs {timeout} outside 500-10000; silently clamped")
+            fail(f"eotTimeoutMs {timeout} outside 500-10000; rejected")
     except (KeyError, ValueError):
         fail("eotTimeoutMs missing or unparseable")
     if attrs.get("allowInterrupt") not in ("true", "false"):

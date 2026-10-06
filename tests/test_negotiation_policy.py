@@ -215,8 +215,11 @@ class SpokenOptionPauseTests(unittest.TestCase):
     def test_bank_disclosure_separates_payment_options(self):
         result = run("bank", "ใช่ครับ ผมเอง")
         prompt = result["nextPrompt"]
-        self.assertIn("ชำระเต็มจำนวน, ชำระบางส่วน, หรือแบ่งชำระ", prompt)
+        # Short spoken labels after "สะดวกชำระแบบ", so the verb is not said three times;
+        # what this test protects is the comma pause between them.
+        self.assertIn("สะดวกชำระแบบเต็มจำนวน, บางส่วน, หรือแบ่งชำระ", prompt)
         self.assertNotIn("เต็มจำนวนชำระ", prompt)
+        self.assertNotIn("เต็มจำนวนบางส่วน", prompt)
 
     def test_bank_hardship_options_are_separated(self):
         after = run("bank", "ตอนนี้ไม่มีเงินครับ", run("bank", "ใช่ครับ ผมเอง"))

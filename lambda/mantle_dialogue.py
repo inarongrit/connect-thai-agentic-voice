@@ -8,9 +8,40 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import boto3
+import botocore.config
 import botocore.exceptions
 
 bedrock = boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+
+# Per-call time limits for the classifier, so one slow model call cannot leave a caller in
+# dead air. Measured on 2026-10-06: Terra p50 ~1.2 s with a worst case near 2.7 s, while Luna,
+# the reviewer, had drifted to a 5-6.5 s p50 from ~1.7 s earlier the same day. Escalation to
+# Luna therefore added five seconds or more to exactly the turns that were already unsure.
+#
+# read_timeout bounds the wait for the response, which for a non-streaming Converse call is
+# effectively the whole generation. Retries are off, because a botocore retry after a read
+# timeout would double the wait the limit exists to cap. When the reviewer times out the
+# turn falls back to the ordinary re-ask, which is faster than the answer it gave up on.
+CLASSIFIER_LEAD_TIMEOUT_S = int(os.environ.get("CLASSIFIER_LEAD_TIMEOUT_MS", "4000")) / 1000
+CLASSIFIER_REVIEWER_TIMEOUT_S = int(os.environ.get("CLASSIFIER_REVIEWER_TIMEOUT_MS", "2500")) / 1000
+
+
+def _bounded_client(seconds):
+    return boto3.client(
+        "bedrock-runtime",
+        region_name=os.environ.get("AWS_REGION", "us-west-2"),
+        config=botocore.config.Config(
+            read_timeout=seconds, connect_timeout=2,
+            # total_max_attempts, not max_attempts: botocore's max_attempts counts RETRIES,
+            # so {"max_attempts": 1} silently becomes two attempts and doubles the very
+            # wait this limit exists to cap. BoundedModelCallTest pins the resolved value.
+            retries={"total_max_attempts": 1, "mode": "standard"},
+        ),
+    )
+
+
+bedrock_lead = _bounded_client(CLASSIFIER_LEAD_TIMEOUT_S)
+bedrock_reviewer = _bounded_client(CLASSIFIER_REVIEWER_TIMEOUT_S)
 
 LUNA_MODEL_ID = os.environ.get("LUNA_MODEL_ID", "us.openai.gpt-5.6-luna")
 TERRA_MODEL_ID = os.environ.get("TERRA_MODEL_ID", "us.openai.gpt-5.6-terra")
@@ -816,7 +847,8 @@ def _extract_json(text):
     return value
 
 
-def _invoke(model_id, prompt):
+def _invoke(model_id, prompt, client=None):
+    client = client or bedrock
     started = time.perf_counter()
     request = {
         "modelId": model_id,
@@ -826,7 +858,7 @@ def _invoke(model_id, prompt):
     if _structured_output_enabled(model_id):
         request["outputConfig"] = CLASSIFIER_OUTPUT_CONFIG
     try:
-        response = bedrock.converse(**request)
+        response = client.converse(**request)
     except botocore.exceptions.ClientError as error:
         # A model or Region that will not take outputConfig rejects the whole request, so
         # retrying per call would double the latency of every turn. Latch it off for this
@@ -835,7 +867,7 @@ def _invoke(model_id, prompt):
             raise
         _STRUCTURED_OUTPUT_BY_MODEL[model_id] = False
         request.pop("outputConfig")
-        response = bedrock.converse(**request)
+        response = client.converse(**request)
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     text = "".join(
         block.get("text", "")
@@ -852,9 +884,14 @@ def _classify(scenario, state, transcript, facts):
     total_ms = 0
     errors = []
     for model_id in CLASSIFIER_MODELS:
+        is_reviewer = len(CLASSIFIER_MODELS) > 1 and model_id == CLASSIFIER_MODELS[-1]
+        client = bedrock_reviewer if is_reviewer else bedrock_lead
+        started = time.perf_counter()
+        counted = False
         try:
-            result, elapsed_ms = _invoke(model_id, prompt)
+            result, elapsed_ms = _invoke(model_id, prompt, client=client)
             total_ms += elapsed_ms
+            counted = True
             intent = str(result.get("intent", "unknown")).strip()
             confidence = float(result.get("confidence", 0))
             raw_value = _compact(result.get("rawValue"), 120)
@@ -875,6 +912,10 @@ def _classify(scenario, state, transcript, facts):
                 "latencyMs": total_ms,
             }
         except Exception as error:  # noqa: BLE001
+            # A timed-out call still cost the caller that wait, so it is counted, otherwise
+            # modelLatencyMs would under-report exactly the turns that felt slowest.
+            if not counted:
+                total_ms += round((time.perf_counter() - started) * 1000)
             errors.append(type(error).__name__)
     return {
         "intent": "unknown",
@@ -1489,6 +1530,9 @@ REPEAT_RE = re.compile(
 )
 
 BANK_PAYMENT_CHOICES = ("ชำระเต็มจำนวน", "ชำระบางส่วน", "แบ่งชำระ")
+# Spoken after "สะดวกชำระแบบ", so the verb is not repeated three times. Each one is
+# still recognised by _payment_type, which RecoveryPromptTest pins.
+PAYMENT_SHORT_LABELS = ("เต็มจำนวน", "บางส่วน", "แบ่งชำระ")
 BANK_HARDSHIP_CHOICES = ("ชำระบางส่วนก่อน", "ขอเลื่อนการชำระออกไป")
 BANK_ASSISTANCE_CHOICES = ("ลดค่างวดชั่วคราว", "พักชำระเงินต้น", "ขยายระยะเวลาผ่อนชำระ")
 BANK_ASSISTANCE_MATCHERS = (
@@ -1667,6 +1711,12 @@ def _apply_signal(state, signal, scenario):
             state["stage"] = "assistance_options"
             state["outcomeDetail"] = "signal=hardship; assistance options offered"
             return {"done": False,
+                    # Left at full length deliberately (14.6 s on a real call). Every clause
+                    # is a product decision: the courtesy acknowledges a hard disclosure, the
+                    # full programme names are what the caller is agreeing to, and the last
+                    # sentence tells them partial payment is still open, which
+                    # test_partial_payment_is_still_reachable_from_the_relief_offer pins.
+                    # The time saved on a hardship call comes from the short re-ask instead.
                     "message": "เข้าใจสถานการณ์ค่ะ ขอบคุณที่แจ้งให้ทราบ "
                                "ธนาคารมีแนวทางช่วยเหลือด้านการชำระอยู่ค่ะ "
                                f"สนใจแบบ{_spoken_options(BANK_ASSISTANCE_CHOICES)}คะ "
@@ -1809,7 +1859,13 @@ def _handle_bank(state, transcript, classified, attributes):
                 customer_address = customer_name
             else:
                 customer_address = f"คุณ{customer_name}" if customer_name else "คุณลูกค้า"
-            return {"done": False, "message": f"ขอบคุณที่ยืนยันตัวนะคะ {customer_address} ขณะนี้มียอดที่ต้องชำระ {amount_spoken} ครบกำหนด {due_date} ค่ะ สะดวก{_spoken_options(BANK_PAYMENT_CHOICES)}คะ"}
+            # The amount and due date must be heard in full. A real call had this line cut
+            # off mid-amount by a one-syllable "อ๋อ", with the caller saying "พูดปุ๊บมันดืด
+            # หยุดเลย", so the disclosure turn is not interruptible. In exchange it is kept
+            # short: the options use their short spoken labels, which the payment matcher
+            # accepts unchanged.
+            state["uninterruptibleTurn"] = state.get("turn", 0)
+            return {"done": False, "message": f"ขอบคุณที่ยืนยันตัวนะคะ {customer_address} ขณะนี้มียอดที่ต้องชำระ {amount_spoken} ครบกำหนด {due_date} ค่ะ สะดวกชำระแบบ{_spoken_options(PAYMENT_SHORT_LABELS)}คะ"}
         return {"done": False, "message": "ขอเรียนยืนยันว่ากำลังเรียนสายเจ้าของชื่อที่แจ้งไว้หรือไม่คะ"}
     if POLICY_V2 and stage == "hardship_options":
         return _handle_hardship_options(state, transcript)
@@ -2112,8 +2168,26 @@ def _dispatch_scenario(scenario, state, transcript, classified, attributes):
     raise ValueError(f"no handler for scenario {scenario!r}")
 
 
+# Menu stages, where a valid answer is one of a closed set of options. A bare filler or an
+# empty transcript at one of these cannot name an option, so a model call can only come back
+# "unknown" -- and it cost 1-3.7 s on a real call to learn that. Lex logs also show empty
+# transcripts arriving as turns. Deliberately NOT applied at yes/no stages, where "ครับ" or
+# "อือ" can genuinely mean yes; those keep their existing handling.
+CHOICE_STAGES = {"payment_type", "assistance_options", "choose_journey", "qualify_need",
+                 "choose_action", "return_reason"}
+# Fillers and particles only, optionally repeated: "อือ", "เออครับ", "อ๋อ ค่ะ", "".
+CHOICE_FILLER_RE = re.compile(
+    r"^(?:อือ|อืม|อึม|เออ|เอ่อ|อ๋อ|อ่า|อะ|เอ่|ครับ|คับ|ค่ะ|คะ|นะ|ไม่รู้|ไม่แน่ใจ|ยังไม่แน่ใจ)*$")
+
+
+def _is_choice_filler(transcript):
+    return bool(CHOICE_FILLER_RE.fullmatch(_despace(_compact(transcript, 80))))
+
+
 def _needs_model(scenario, state, transcript):
     stage = state.get("stage", "")
+    if stage in CHOICE_STAGES and _is_choice_filler(transcript):
+        return False
     if POLICY_V2 and stage in {"hardship_options", "assistance_options"}:
         return False
     if scenario == "bank":
@@ -2148,7 +2222,7 @@ def _needs_model(scenario, state, transcript):
 
 # Advanced ASR end-of-turn tuning, recomputed every turn.
 #
-# The documented defaults are 0.7 confidence / 5000 ms silence, and AWS guidance is
+# AWS documents a 0.7 confidence threshold and a 640 ms timeout as defaults, and its guidance is
 # explicit that a single aggressive global default is the wrong tool: it changes pacing
 # for every turn in the bot to fix one slot. The flow used to pin 1100 ms globally,
 # which cut off any caller who paused mid-utterance -- "วันที่... สิบห้า" is the common
@@ -2158,7 +2232,8 @@ def _needs_model(scenario, state, transcript):
 #
 # confidence is the primary lever; the silence timeout only applies when confidence has
 # not already ended the turn. Threshold must stay inside 0.5-0.9 or Lex rejects the
-# session attribute; timeout outside 500-10000 is silently clamped.
+# session attribute, and a timeout outside 500-10000 is rejected by the speech model
+# (earlier documentation said clamped; the current guide says rejected).
 # Retuned after a real Thai call felt sluggish turn-by-turn. The first values treated the
 # silence window as a safety margin and set it generously: 5000 ms default, 7000 ms for
 # dictated and confirmation turns. That was backwards. The window is the FALLBACK used only
@@ -2178,7 +2253,12 @@ def _needs_model(scenario, state, transcript):
 # Confidence stays the primary lever; the windows are now short because they are a backstop.
 EOT_CONFIRMATION = ("0.5", "600")   # ใช่ / ไม่ใช่ -- AWS's documented yes/no value is ~500
 EOT_DICTATED = ("0.8", "2000")      # dates and amounts -- still ~2x a Thai mid-turn pause
-EOT_DEFAULT = ("0.6", "1500")       # most turns -- see the note below before cutting this
+# Open-ended: 1500 -> 1000 ms, on evidence rather than by feel. Contact Lens timings from
+# a real call showed a 2.3 s floor on turns that never reached a model, and the only
+# mid-utterance pause observed was 0.6 s ("ขยาย" ... "เวลาชําระครับ"), so 1000 ms keeps a
+# 400 ms margin over it. AWS's documented default for this attribute is now 640 ms.
+# Measure after changing with spike/call_gaps.py.
+EOT_DEFAULT = ("0.6", "1000")
 
 # Stages whose next caller utterance is dictated -- a date, a time, or an amount -- rather
 # than a choice or a free reply. These are the turns where a Thai speaker pauses
@@ -2348,7 +2428,9 @@ def _speech_tuning(state):
         # vocabulary is closed per scenario and the stage machine only advances on a
         # recognised answer, so off-topic speech re-anchors on the same question and escalates
         # to a person after MAX_REPEATS. Verified against the deployed function.
-        "allowInterrupt": "false" if pending else "true",
+        "allowInterrupt": "false" if (
+            pending or state.get("uninterruptibleTurn") == state.get("turn")
+        ) else "true",
     }
 
 
@@ -2358,14 +2440,33 @@ def _speech_tuning(state):
 # rung is shorter and more explicit than the last, because the likeliest causes are a long
 # prompt and an open-ended question.
 RECOVERY_LEAD_TH = {
-    1: "ขออภัยค่ะ ยังฟังไม่ชัดเจน ",
-    2: "ขออภัยค่ะ รบกวนตอบสั้น ๆ นะคะ ",
+    # Not "ยังฟังไม่ชัดเจน". The Lex logs show ASR heard callers perfectly on these turns;
+    # what failed was the answer not being one of the options, so claiming the line was
+    # unclear is untrue and reads as the bot not listening.
+    1: "ขออภัยค่ะ ",
+    2: "ขออภัยค่ะ รบกวนเลือกหนึ่งข้อนะคะ ",
+}
+
+# Short re-asks per stage. A real call spent about 7 s on each recovery prompt because it
+# re-read the full option names; the caller has already heard those once, so the re-ask
+# names them briefly. Every short label is still recognised by its stage's matcher, which
+# RecoveryPromptTest pins, so shortening cannot make a correct answer unrecognisable.
+RECOVERY_SHORT_ASK_TH = {
+    "payment_type": lambda: f"สะดวกชำระแบบ{_spoken_options(PAYMENT_SHORT_LABELS)}คะ",
+    "assistance_options": lambda: f"สนใจแบบ{_spoken_options(('ลดค่างวด', 'พักเงินต้น', 'ขยายเวลา'))}คะ",
+    "choose_journey": lambda: f"ต้องการ{_spoken_options(('เลื่อนวันส่ง', 'ติดตามพัสดุ', 'คืนสินค้า'))}คะ",
+    "return_reason": lambda: f"{_spoken_options(RETAIL_RETURN_CHOICES)}คะ",
+    "qualify_need": lambda: f"สนใจด้าน{_spoken_options(INSURANCE_NEED_CHOICES)}คะ",
+    "choose_action": lambda: f"สนใจ{_spoken_options(('สัมมนา', 'นัดคุยกับผู้แนะนำ'))}คะ",
 }
 
 
-def _recovery_message(message, attempt):
-    """Prefix a re-ask so each attempt sounds like a fresh try, not a stuck recording."""
+def _recovery_message(message, attempt, stage=None):
+    """Re-ask briefly, so each attempt sounds like a fresh try rather than a stuck recording."""
     lead = RECOVERY_LEAD_TH.get(attempt, RECOVERY_LEAD_TH[2])
+    short = RECOVERY_SHORT_ASK_TH.get(stage)
+    if short:
+        return lead + short()
     spoken = str(message or "").strip()
     if not spoken:
         return spoken
@@ -2509,7 +2610,8 @@ def handler(event, context):
             # a row transferred with every slot still unspecified because the ladder had a
             # single rung.
             result = dict(result)
-            result["message"] = _recovery_message(result.get("message", ""), attempt)
+            result["message"] = _recovery_message(result.get("message", ""), attempt,
+                                                  state.get("stage"))
     state["lastModel"] = classified.get("model", "deterministic")
     state["lastLatencyMs"] = classified.get("latencyMs", 0)
     output = {

@@ -357,7 +357,7 @@
           "mode": "inbound_kb",
           "mantleState": "{}",
           "x-amz-lex:audio:end-confidence-threshold:*:*": "0.6",
-          "x-amz-lex:audio:end-timeout-ms:*:*": "1500",
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1000",
           "x-amz-lex:audio:start-timeout-ms:*:*": "6000",
           "profileFound": "$.Attributes.profileFound",
           "profileAmount": "$.Attributes.profileAmount",

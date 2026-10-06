@@ -197,6 +197,9 @@ executing. Templates exceed the inline limit, so stage to S3 first and pass
 python3 spike/validate_all_scenarios.py   # 24 multi-turn walks vs the deployed Lambda
 python3 spike/measure_deployed_turns.py   # which model answers, and how fast
 python3 spike/bench_profiles.py           # re-run if the model IDs change
+python3 spike/call_gaps.py --instance-id <id> --last 5   # what callers actually heard:
+                                          # silent gaps and prompt lengths, from the
+                                          # Contact Lens analysis Connect writes to S3
 ```
 
 ## Thai language reality
